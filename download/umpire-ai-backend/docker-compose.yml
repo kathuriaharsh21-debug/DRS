@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  umpire-ai:
+    build: .
+    container_name: umpire-ai-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./output:/app/output
+    environment:
+      - DEBUG=true
+      - UPLOAD_DIR=/app/uploads
+      - OUTPUT_DIR=/app/output
+      - MAX_VIDEO_SIZE=524288000
+      - BALL_TYPE=red
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
