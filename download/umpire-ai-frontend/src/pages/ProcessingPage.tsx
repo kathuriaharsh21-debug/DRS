@@ -17,7 +17,7 @@ import { PROCESSING_STEPS } from '../lib/constants';
 import type { ProcessingStep } from '../types';
 import type { AnalysisStatus } from '../types';
 
-const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+const ICON_MAP: Record<string, React.FC<{ className?: string }>> = {
   Film,
   Crosshair,
   Move,

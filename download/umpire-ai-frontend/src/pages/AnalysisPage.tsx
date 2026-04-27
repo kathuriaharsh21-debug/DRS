@@ -26,7 +26,7 @@ export default function AnalysisPage() {
       try {
         setLoading(true);
         // The jobId is the same as videoId for the upload-and-analyze endpoint
-        const res = await api.getAnalysisResult(videoId);
+        const res = await api.getAnalysisResult(videoId!);
         if (!cancelled) {
           setResult(res);
           setLoading(false);

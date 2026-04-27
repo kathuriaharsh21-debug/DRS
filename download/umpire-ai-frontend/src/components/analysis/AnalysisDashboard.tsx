@@ -16,7 +16,7 @@ type TabId = 'pitch-map' | 'stats';
 export function AnalysisDashboard({ result, videoUrl }: AnalysisDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('pitch-map');
 
-  const tabs: { id: TabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  const tabs: { id: TabId; label: string; icon: React.FC<{ className?: string }> }[] = [
     { id: 'pitch-map', label: 'Pitch Map', icon: Map },
     { id: 'stats', label: 'Statistics', icon: BarChart3 },
   ];

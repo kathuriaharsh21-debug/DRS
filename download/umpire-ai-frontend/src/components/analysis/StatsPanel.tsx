@@ -170,7 +170,7 @@ function InfoRow({
   label,
   value,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.FC<{ className?: string }>;
   label: string;
   value: string;
 }) {

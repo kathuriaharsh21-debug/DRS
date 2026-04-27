@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect, type RefObject } from 'react';
 import { DEFAULT_FPS } from '../lib/constants';
 
-interface UseFramePlayerReturn {
+export interface UseFramePlayerReturn {
   currentFrame: number;
   currentTime: number;
   isPlaying: boolean;

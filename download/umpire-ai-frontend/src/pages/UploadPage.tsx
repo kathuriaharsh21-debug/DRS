@@ -36,6 +36,7 @@ export default function UploadPage() {
     if (resultVideoId) {
       navigate(`/processing/${resultVideoId}`);
     }
+    return resultVideoId;
   };
 
   return (
