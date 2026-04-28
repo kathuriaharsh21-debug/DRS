@@ -1,0 +1,24 @@
+# ======================================================================
+# Umpire AI — Railway Deployment Config
+# ======================================================================
+# Railway is the easiest way to deploy the backend.
+# Steps:
+#   1. Install Railway CLI: npm install -g @railway/cli
+#   2. Login: railway login
+#   3. Init: railway init
+#   4. Deploy: railway up
+#
+# Or connect your GitHub repo at https://railway.app
+# ======================================================================
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+[env]
+PORT = "8000"
+PYTHON_VERSION = "3.11"

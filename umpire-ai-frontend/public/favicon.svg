@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <circle cx="16" cy="16" r="14" fill="#d97706"/>
+  <circle cx="16" cy="16" r="13" fill="#f59e0b"/>
+  <circle cx="16" cy="16" r="11" fill="url(#seam)"/>
+  <ellipse cx="16" cy="16" rx="8" ry="3" stroke="#d97706" stroke-width="0.8" fill="none" transform="rotate(-30 16 16)"/>
+  <ellipse cx="16" cy="16" rx="8" ry="3" stroke="#d97706" stroke-width="0.8" fill="none" transform="rotate(30 16 16)"/>
+  <defs>
+    <radialGradient id="seam" cx="40%" cy="35%">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </radialGradient>
+  </defs>
+</svg>

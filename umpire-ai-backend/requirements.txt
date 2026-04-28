@@ -1,0 +1,29 @@
+# ======================================================================
+# Umpire AI Backend — Requirements (v2)
+# ======================================================================
+# Core framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+python-multipart==0.0.9
+
+# Computer vision
+opencv-python-headless==4.10.0.84
+numpy==2.1.0
+scipy==1.14.0
+Pillow==10.4.0
+
+# Deep learning detection & tracking (v2)
+ultralytics>=8.3.0        # YOLOv11 + BoT-SORT built-in
+torch>=2.0.0              # PyTorch backend
+torchvision>=0.15.0       # Vision transforms for YOLO
+
+# Advanced filtering (v2)
+filterpy>=1.4.5           # Kalman / Unscented Kalman Filter
+
+# Data validation & config
+pydantic==2.9.0
+pydantic-settings==2.5.0
+python-dotenv==1.0.1
+
+# Async file I/O
+aiofiles==24.1.0
