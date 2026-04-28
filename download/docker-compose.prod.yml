@@ -1,0 +1,74 @@
+# ======================================================================
+# Umpire AI — Full-Stack Production Docker Compose
+# ======================================================================
+# Usage:
+#   docker-compose -f docker-compose.prod.yml up -d --build
+#
+# This starts:
+#   - Frontend (nginx) on port 3000
+#   - Backend  (FastAPI) on port 8000
+#   - Nginx reverse proxy on port 80 (routes /api → backend, / → frontend)
+# ======================================================================
+
+version: "3.9"
+
+services:
+  # ── Backend ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./umpire-ai-backend
+      dockerfile: Dockerfile
+    container_name: umpire-ai-backend
+    restart: unless-stopped
+    env_file:
+      - ./umpire-ai-backend/.env
+    volumes:
+      - backend-uploads:/app/uploads
+      - backend-output:/app/output
+    networks:
+      - umpire-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ── Frontend ─────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./umpire-ai-frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://backend:8000
+    container_name: umpire-ai-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - umpire-network
+
+  # ── Reverse Proxy (Nginx) ────────────────────────────────────────────
+  proxy:
+    image: nginx:alpine
+    container_name: umpire-ai-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - umpire-network
+
+volumes:
+  backend-uploads:
+  backend-output:
+
+networks:
+  umpire-network:
+    driver: bridge

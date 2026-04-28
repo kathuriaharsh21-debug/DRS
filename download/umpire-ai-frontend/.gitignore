@@ -3,20 +3,21 @@ node_modules/
 .pnp
 .pnp.js
 
-# Build
+# Build output
 dist/
 build/
 
-# Environment
+# Environment & secrets
 .env
 .env.local
+.env.production
 .env.development.local
 .env.test.local
 .env.production.local
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
@@ -25,9 +26,14 @@ build/
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
+# Debug logs
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Misc
+# Testing
+coverage/
+
+# TypeScript
 *.tsbuildinfo

@@ -1,0 +1,31 @@
+# ======================================================================
+# Umpire AI — Render Deployment Config
+# ======================================================================
+# Render.com free tier supports Python web services.
+# Connect your GitHub repo at https://render.com
+# ======================================================================
+
+services:
+  - type: web
+    name: umpire-ai-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: PORT
+        value: "8000"
+      - key: DEBUG
+        value: "false"
+      - key: DETECTION_TIER
+        value: "auto"
+      - key: TRACKING_TIER
+        value: "auto"
+      - key: USE_UKF
+        value: "true"
+    healthCheckPath: /health
+    disk:
+      name: uploads
+      mountPath: /app/uploads
+      sizeGB: 5

@@ -1,28 +1,13 @@
-# Byte-compiled / optimised / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
+dist/
+build/
+.eggs/
 
 # Virtual environments
 .venv/
@@ -37,27 +22,34 @@ env/
 *.swo
 *~
 
-# Environment variables
-.env
-
-# Uploaded / generated content
-uploads/
-output/
-*.mp4
-*.webm
-*.mov
-*.avi
-*.mkv
-
-# OS files
+# OS
 .DS_Store
 Thumbs.db
+
+# Environment & secrets
+.env
+.env.local
+.env.production
+
+# Uploaded videos (never commit)
+uploads/
+output/
+
+# Model weights (too large for Git)
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Docker
+docker-compose.override.yml
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
-.mypy_cache/
+coverage.xml
 
 # Logs
 *.log
+logs/
