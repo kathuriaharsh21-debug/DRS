@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback } from 'react';
-import type { TrajectoryPoint } from '../../types';
+import type { TrajectoryPoint, BouncePoint, PredictedPathPoint } from '../../types';
 
 interface TrajectoryCanvasProps {
   points: TrajectoryPoint[];
@@ -9,6 +9,12 @@ interface TrajectoryCanvasProps {
   containerRef: React.RefObject<HTMLVideoElement | null>;
   currentFrame: number;
   totalFrames: number;
+  /** v2: bounce points detected in trajectory */
+  bouncePoints?: BouncePoint[];
+  /** v2: physics-predicted future path */
+  predictedPath?: PredictedPathPoint[];
+  /** v2: frame numbers that correspond to bounce events */
+  bounceFrameNumbers?: number[];
 }
 
 export function TrajectoryCanvas({
@@ -19,6 +25,9 @@ export function TrajectoryCanvas({
   containerRef,
   currentFrame,
   totalFrames,
+  bouncePoints = [],
+  predictedPath = [],
+  bounceFrameNumbers = [],
 }: TrajectoryCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -61,11 +70,29 @@ export function TrajectoryCanvas({
     // Draw trajectory path
     drawTrajectoryPath(ctx, points, scaleX, scaleY, rect.width, rect.height);
 
+    // Draw v2 predicted future path (dashed cyan line)
+    if (predictedPath.length > 0 && points.length > 2) {
+      drawPredictedPath(ctx, points, predictedPath, scaleX, scaleY);
+    }
+
+    // Draw v2 bounce points (orange markers)
+    if (bouncePoints.length > 0) {
+      drawBounceMarkers(ctx, bouncePoints, scaleX, scaleY);
+    } else if (bounceFrameNumbers.length > 0) {
+      // Alternative: mark bounces by frame number in trajectory
+      drawBouncesByFrame(ctx, points, bounceFrameNumbers, scaleX, scaleY);
+    }
+
     // Draw current ball position
     if (currentBallPosition) {
       const bx = currentBallPosition.x * scaleX;
       const by = currentBallPosition.y * scaleY;
       drawBall(ctx, bx, by);
+
+      // Highlight if current frame is a bounce frame
+      if (bounceFrameNumbers.includes(currentFrame)) {
+        drawBounceRing(ctx, bx, by);
+      }
     }
 
     // Draw progress indicator
@@ -75,8 +102,13 @@ export function TrajectoryCanvas({
       ctx.fillRect(0, 0, rect.width * progress, 3);
     }
 
+    // v2: Draw tier badge in top-left
+    ctx.font = '10px monospace';
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.5)';
+    ctx.fillText('Umpire AI v2', 8, 16);
+
     ctx.restore();
-  }, [points, currentBallPosition, containerRef, currentFrame, totalFrames]);
+  }, [points, currentBallPosition, containerRef, currentFrame, totalFrames, bouncePoints, predictedPath, bounceFrameNumbers]);
 
   // Draw loop for smooth animation
   useEffect(() => {
@@ -132,7 +164,6 @@ function drawStumps(
   ctx.lineWidth = Math.max(1, stumpWidth * 0.5);
   ctx.lineCap = 'round';
 
-  // Three stumps
   for (let i = -1; i <= 1; i++) {
     const x = stumpX + i * stumpSpacing;
     ctx.beginPath();
@@ -141,7 +172,6 @@ function drawStumps(
     ctx.stroke();
   }
 
-  // Bails (horizontal lines connecting stumps)
   ctx.lineWidth = Math.max(1, stumpWidth * 0.35);
   ctx.strokeStyle = '#cbd5e1';
   for (let i = 0; i < 2; i++) {
@@ -163,7 +193,6 @@ function drawTrajectoryPath(
 ) {
   if (points.length < 2) return;
 
-  // Create gradient along the path (green → amber → red)
   const gradient = ctx.createLinearGradient(
     points[0].x * scaleX,
     points[0].y * scaleY,
@@ -174,7 +203,7 @@ function drawTrajectoryPath(
   gradient.addColorStop(0.5, '#fbbf24');
   gradient.addColorStop(1, '#ef4444');
 
-  // Draw glow layer
+  // Glow layer
   ctx.beginPath();
   ctx.moveTo(points[0].x * scaleX, points[0].y * scaleY);
   for (let i = 1; i < points.length; i++) {
@@ -186,7 +215,7 @@ function drawTrajectoryPath(
   ctx.lineJoin = 'round';
   ctx.stroke();
 
-  // Draw main trajectory line
+  // Main trajectory line
   ctx.beginPath();
   ctx.moveTo(points[0].x * scaleX, points[0].y * scaleY);
   for (let i = 1; i < points.length; i++) {
@@ -196,7 +225,7 @@ function drawTrajectoryPath(
   ctx.lineWidth = 2.5;
   ctx.stroke();
 
-  // Draw small dots at each trajectory point
+  // Small dots at each point
   for (let i = 0; i < points.length; i++) {
     const px = points[i].x * scaleX;
     const py = points[i].y * scaleY;
@@ -205,6 +234,117 @@ function drawTrajectoryPath(
     ctx.fillStyle = 'rgba(251, 191, 36, 0.4)';
     ctx.fill();
   }
+}
+
+// ─── v2: Predicted future path ─────────────────────────────
+
+function drawPredictedPath(
+  ctx: CanvasRenderingContext2D,
+  trajectoryPoints: TrajectoryPoint[],
+  predictedPath: PredictedPathPoint[],
+  scaleX: number,
+  scaleY: number,
+) {
+  if (trajectoryPoints.length < 2 || predictedPath.length === 0) return;
+
+  // Start from the last trajectory point
+  const lastPoint = trajectoryPoints[trajectoryPoints.length - 1];
+  const startX = lastPoint.x * scaleX;
+  const startY = lastPoint.y * scaleY;
+
+  ctx.beginPath();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = 'rgba(34, 211, 238, 0.7)'; // cyan for predicted
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+
+  ctx.moveTo(startX, startY);
+
+  for (let i = 0; i < Math.min(predictedPath.length, 15); i++) {
+    const pp = predictedPath[i];
+    // Offset from last trajectory point, scaled
+    const px = startX + pp.x * (i + 1) * 20;
+    const py = startY + pp.y * (i + 1) * 20;
+    ctx.lineTo(px, py);
+
+    // Draw step number
+    if (i % 3 === 0) {
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.font = '8px monospace';
+      ctx.fillStyle = 'rgba(34, 211, 238, 0.5)';
+      ctx.fillText(`${i + 1}`, px + 4, py - 4);
+      ctx.setLineDash([4, 4]);
+      ctx.restore();
+    }
+  }
+
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Label
+  ctx.font = '9px monospace';
+  ctx.fillStyle = 'rgba(34, 211, 238, 0.6)';
+  if (predictedPath.length > 0) {
+    const lastPP = predictedPath[Math.min(predictedPath.length - 1, 14)];
+    const labelX = startX + lastPP.x * 15 * 20;
+    const labelY = startY + lastPP.y * 15 * 20;
+    ctx.fillText('PREDICTED', labelX + 6, labelY);
+  }
+}
+
+// ─── v2: Bounce markers ────────────────────────────────────
+
+function drawBounceMarkers(
+  ctx: CanvasRenderingContext2D,
+  bouncePoints: BouncePoint[],
+  scaleX: number,
+  scaleY: number,
+) {
+  for (const bp of bouncePoints) {
+    const bx = bp.x * scaleX;
+    const by = bp.y * scaleY;
+    drawBounceRing(ctx, bx, by);
+
+    // Label
+    ctx.font = 'bold 9px monospace';
+    ctx.fillStyle = 'rgba(251, 146, 60, 0.8)'; // orange-400
+    ctx.textAlign = 'left';
+    ctx.fillText('PITCH', bx + 14, by + 3);
+  }
+}
+
+function drawBouncesByFrame(
+  ctx: CanvasRenderingContext2D,
+  trajectoryPoints: TrajectoryPoint[],
+  bounceFrameNumbers: number[],
+  scaleX: number,
+  scaleY: number,
+) {
+  const bounceSet = new Set(bounceFrameNumbers);
+  for (const pt of trajectoryPoints) {
+    if (bounceSet.has(pt.frame_number)) {
+      const bx = pt.x * scaleX;
+      const by = pt.y * scaleY;
+      drawBounceRing(ctx, bx, by);
+    }
+  }
+}
+
+function drawBounceRing(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  // Orange ring for bounce
+  const ringRadius = 14;
+  ctx.beginPath();
+  ctx.arc(x, y, ringRadius, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(251, 146, 60, 0.7)'; // orange-400
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Small inner dot
+  ctx.beginPath();
+  ctx.arc(x, y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(251, 146, 60, 0.8)';
+  ctx.fill();
 }
 
 function drawBall(ctx: CanvasRenderingContext2D, x: number, y: number) {

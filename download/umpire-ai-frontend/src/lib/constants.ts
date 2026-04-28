@@ -25,7 +25,7 @@ export const MAX_FILE_SIZE_MB = 500;
 export const DEFAULT_FPS = 30;
 export const PLAYBACK_SPEEDS = [0.25, 0.5, 1, 2] as const;
 
-// ─── Processing Pipeline Steps ────────────────────────────
+// ─── Processing Pipeline Steps (v2) ──────────────────────
 
 export const PROCESSING_STEPS: ProcessingStep[] = [
   {
@@ -37,19 +37,19 @@ export const PROCESSING_STEPS: ProcessingStep[] = [
   {
     id: 'ball-detection',
     label: 'Ball Detection',
-    description: 'Detecting cricket ball using HSV color space and contour analysis',
+    description: 'Detecting cricket ball using YOLOv11+P2 (GPU) or HSV+MOG2 (CPU fallback)',
     icon: 'Crosshair',
   },
   {
     id: 'ball-tracking',
     label: 'Ball Tracking',
-    description: 'Multi-frame association and ball trajectory tracking',
+    description: 'Multi-frame tracking using BoT-SORT with Camera Motion Compensation',
     icon: 'Move',
   },
   {
     id: 'trajectory-estimation',
     label: 'Trajectory Estimation',
-    description: 'Estimating 3D trajectory using Kalman filter',
+    description: 'Physics-based trajectory using Unscented Kalman Filter (gravity + drag + bounce)',
     icon: 'TrendingUp',
   },
   {
@@ -61,7 +61,7 @@ export const PROCESSING_STEPS: ProcessingStep[] = [
   {
     id: 'decision-engine',
     label: 'Decision Engine',
-    description: 'Rule-based analysis for LBW / Bowled / Caught Behind decisions',
+    description: 'ICC rule-based analysis for LBW / Bowled / Wide / No-ball decisions',
     icon: 'Gavel',
   },
 ];
@@ -82,9 +82,11 @@ export const COLORS = {
   trajectoryAmber: '#fbbf24',
   trajectoryRed: '#ef4444',
   trajectoryBlue: '#3b82f6',
+  trajectoryCyan: '#22d3ee',    // v2: predicted path color
   ballGlow: '#fbbf24',
   pitchMark: '#34d399',
   impactMark: '#f59e0b',
+  bounceMark: '#fb923c',       // v2: bounce point color
   wicketHighlight: '#ef4444',
   missingHighlight: '#3b82f6',
   stumps: '#e2e8f0',

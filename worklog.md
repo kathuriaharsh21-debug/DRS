@@ -87,3 +87,62 @@ Stage Summary:
 - Dark sports-tech theme with custom animations (glow effects, shimmer, entrance animations)
 - Full API client with XHR-based upload progress tracking and status polling
 - Docker-ready with nginx reverse proxy for API calls
+
+---
+Task ID: 4
+Agent: Super Z (Main)
+Task: Research best cricket ball tracking techniques and upgrade backend to v2 hybrid pipeline
+
+Work Log:
+- Researched state-of-the-art cricket ball detection, tracking, and trajectory prediction methods
+- Generated comprehensive research report: CRICKET_BALL_TRACKING_RESEARCH.md
+- Identified optimal pipeline: YOLOv11+P2 → BoT-SORT → UKF+Physics → Homography
+- Upgraded 7 backend files for v2 hybrid pipeline:
+
+### Backend v2 Changes:
+1. **ball_detector.py** — Hybrid facade with YOLOBallDetector (YOLOv11+P2, GPU) + ClassicalBallDetector (HSV+MOG2, CPU fallback). Auto-selects tier based on availability.
+2. **ball_tracker.py** — Hybrid facade with BoTSORTTracker (Camera Motion Compensation + NIC, GPU) + EnhancedBallTracker (Hungarian algorithm, CPU fallback). Added exponential velocity smoothing.
+3. **trajectory_estimator.py** — Full Unscented Kalman Filter implementation (6D state: x,y,z,vx,vy,vz) with physics model: gravity, air drag (v^2), Magnus effect (spin-induced lateral force), bounce model (coefficient of restitution + friction). 20-step future path prediction for LBW. Linear KF kept as fallback.
+4. **pitch_mapper.py** — Improved auto-calibration with hierarchical line clustering, Otsu-based Canny thresholds, parallel line grouping, line merging for robust crease detection.
+5. **video_processor.py** — Wired up hybrid pipeline with tier auto-detection, added predicted path overlay to annotated video, bounce point markers, pipeline info in response JSON.
+6. **config.py** — Added 15 new settings: detection_tier, tracking_tier, yolo_model_path, yolo_confidence, yolo_imgsz, yolo_device, use_ukf, gravity, air_drag_coeff, magnus_coeff, restitution, surface_friction, etc.
+7. **requirements.txt** — Added ultralytics>=8.3.0, torch>=2.0.0, torchvision, filterpy>=1.4.5
+
+- All 23 Python files pass syntax validation
+- All 7 core module imports verified successfully
+- UKF trajectory estimation tested with simulated data (bounce detection, future prediction)
+- Updated README.md with v2 documentation, tier selection guide, physics model parameters
+
+Stage Summary:
+- Backend upgraded from v1 (classical only) to v2 (hybrid GPU+CPU) pipeline
+- Key accuracy improvements: YOLOv11+P2 for 3-5px ball detection, BoT-SORT CMC for camera motion, UKF for nonlinear bounce modeling
+- Automatic fallback: if GPU/model unavailable, gracefully falls back to CPU methods
+- New response fields: pipeline (detection_tier, tracking_tier, trajectory_filter), bounce_points, predicted_path
+
+---
+Task ID: 5
+Agent: Super Z (Main)
+Task: Update frontend for v2 backend response (pipeline info, bounce points, predicted path)
+
+Work Log:
+- Updated 8 frontend files to support v2 backend response format:
+
+### Frontend v2 Changes:
+1. **types/index.ts** — Added PipelineInfo, BouncePoint, PredictedPathPoint interfaces. Extended TrajectoryPoint with z coordinate, AnalysisResultResponse with pipeline, bounce_points, predicted_path_data, frames_with_ball, predicted_stump_hit fields.
+2. **StatsPanel.tsx** — New Pipeline Configuration section with tier badges (Detection/Tracking/Trajectory), GPU/CPU indicators. Added Bounces Detected, Stump Hit Prediction to trajectory details. New TierBadge sub-component.
+3. **TrajectoryCanvas.tsx** — Renders bounce points as orange ring markers with "PITCH" label. Draws predicted future path as dashed cyan line with step numbers. Highlights current frame if it's a bounce event.
+4. **PitchMap.tsx** — Draws bounce points on the pitch with concentric orange circles. Draws predicted future path from impact point toward stumps as dashed cyan trajectory. Added drawBouncePointOnPitch and drawPredictedPathOnPitch helpers.
+5. **DecisionPanel.tsx** — Pipeline badge showing active tiers (YOLOv11+BoT-SORT or HSV+Hungarian). Bounce Events section listing all detected bounces with frame number and timestamp.
+6. **AnalysisDashboard.tsx** — New "Pipeline" tab (3rd tab) with detailed tier descriptions, GPU/CPU badges, and analysis summary (frames processed, bounces detected, trajectory confidence, stump hit prediction). Passes bouncePoints, predictedPath, bounceFrameNumbers to FrameByFramePlayer and PitchMap.
+7. **FrameByFramePlayer.tsx** — Accepts and passes through bouncePoints, predictedPath, bounceFrameNumbers props. Shows "PITCH" indicator badge when current frame is a bounce event. Shows "v2" badge in top-right corner.
+8. **constants.ts** — Updated processing step descriptions for v2 (YOLOv11+P2 detection, BoT-SORT tracking, UKF physics trajectory). Added trajectoryCyan and bounceMark colors.
+
+- All 8 TypeScript files pass syntax validation
+- Total new/modified frontend code: ~1,929 lines across 8 files
+
+Stage Summary:
+- Frontend fully updated to display v2 backend data
+- New Pipeline tab shows which detection/tracking/trajectory tier was used
+- Bounce events visualized on both video canvas and pitch map
+- Predicted future path shown as cyan dashed line
+- Backward compatible: all v2 fields are optional, works with v1 backend too

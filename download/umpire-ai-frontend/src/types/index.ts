@@ -17,6 +17,35 @@ export type Decision = 'OUT' | 'NOT OUT';
 export type PredictedPath = 'HITTING' | 'MISSING';
 export type BallType = 'red' | 'white' | 'pink';
 
+// ─── v2 Pipeline Info ────────────────────────────────────
+
+export interface PipelineInfo {
+  /** Active detection tier: "yolo", "classical", or "auto" */
+  detection_tier: string;
+  /** Active tracking tier: "botsort", "classical", or "auto" */
+  tracking_tier: string;
+  /** Trajectory filter: "ukf" or "linear_kf" */
+  trajectory_filter: string;
+}
+
+// ─── v2 Bounce Point ────────────────────────────────────
+
+export interface BouncePoint {
+  x: number;
+  y: number;
+  frame_number: number;
+  timestamp: number;
+}
+
+// ─── v2 Predicted Path Point ────────────────────────────
+
+export interface PredictedPathPoint {
+  x: number;
+  y: number;
+  z: number;
+  bounce: boolean;
+}
+
 export interface AnalysisResponse {
   job_id: string;
   video_id: string;
@@ -38,6 +67,7 @@ export interface StatusResponse {
 export interface TrajectoryPoint {
   x: number;
   y: number;
+  z?: number;           // v2: height (0=ground, 1=max)
   frame_number: number;
   timestamp: number;
 }
@@ -49,6 +79,10 @@ export interface FrameDataPoint {
   ball_position: { x: number; y: number } | null;
   confidence: number;
   trajectory_up_to_frame: TrajectoryPoint[];
+  /** v2: which detection tier produced this frame's data */
+  detection_tier?: string;
+  /** v2: which tracking tier produced this frame's data */
+  tracking_tier?: string;
 }
 
 // ─── Analysis Result ──────────────────────────────────────
@@ -59,6 +93,10 @@ export interface TrajectoryData {
   deviation_degrees: number;
   predicted_path: PredictedPath;
   points: TrajectoryPoint[];
+  /** v2: bounce points detected in the trajectory */
+  bounce_points?: BouncePoint[];
+  /** v2: physics-predicted future path for LBW visualization */
+  predicted_future_path?: PredictedPathPoint[];
 }
 
 export interface AnalysisResultResponse {
@@ -73,6 +111,20 @@ export interface AnalysisResultResponse {
   frames: FrameDataPoint[];
   annotated_video_url?: string;
   processing_time_seconds: number;
+  /** v2: pipeline tier information */
+  pipeline?: PipelineInfo;
+  /** v2: bounce points at top level */
+  bounce_points?: BouncePoint[];
+  /** v2: predicted future path at top level */
+  predicted_path_data?: PredictedPathPoint[];
+  /** v2: number of frames with ball detected */
+  frames_with_ball?: number;
+  /** v2: total frames processed */
+  frames_processed?: number;
+  /** v2: overall confidence from trajectory estimator */
+  trajectory_confidence?: number;
+  /** v2: predicted stump hit */
+  predicted_stump_hit?: boolean;
 }
 
 export interface FrameDataResponse {

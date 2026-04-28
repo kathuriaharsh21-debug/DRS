@@ -2,13 +2,19 @@ import { useRef, useEffect, useMemo } from 'react';
 import { useFramePlayer } from '../../hooks/useFramePlayer';
 import { TrajectoryCanvas } from '../analysis/TrajectoryCanvas';
 import { VideoControls } from './VideoControls';
-import type { FrameDataPoint, TrajectoryPoint } from '../../types';
+import type { FrameDataPoint, TrajectoryPoint, BouncePoint, PredictedPathPoint } from '../../types';
 
 interface FrameByFramePlayerProps {
   videoSrc: string;
   frames: FrameDataPoint[];
   trajectoryPoints: TrajectoryPoint[];
   fps?: number;
+  /** v2: bounce points to overlay */
+  bouncePoints?: BouncePoint[];
+  /** v2: physics-predicted future path */
+  predictedPath?: PredictedPathPoint[];
+  /** v2: frame numbers that are bounce events */
+  bounceFrameNumbers?: number[];
 }
 
 export function FrameByFramePlayer({
@@ -16,6 +22,9 @@ export function FrameByFramePlayer({
   frames,
   trajectoryPoints,
   fps = 30,
+  bouncePoints = [],
+  predictedPath = [],
+  bounceFrameNumbers = [],
 }: FrameByFramePlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const player = useFramePlayer(videoRef, fps);
@@ -39,10 +48,14 @@ export function FrameByFramePlayer({
     return frameLookup.get(player.currentFrame) || null;
   }, [frameLookup, player.currentFrame]);
 
+  // Check if current frame is a bounce
+  const isBounceFrame = useMemo(() => {
+    return bounceFrameNumbers.includes(player.currentFrame);
+  }, [bounceFrameNumbers, player.currentFrame]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore when typing in input fields
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       switch (e.key) {
@@ -95,6 +108,9 @@ export function FrameByFramePlayer({
           containerRef={videoRef}
           currentFrame={player.currentFrame}
           totalFrames={player.totalFrames}
+          bouncePoints={bouncePoints}
+          predictedPath={predictedPath}
+          bounceFrameNumbers={bounceFrameNumbers}
         />
 
         {/* Frame Info Overlay */}
@@ -109,6 +125,21 @@ export function FrameByFramePlayer({
               </span>
             </div>
           )}
+          {/* v2: Bounce indicator */}
+          {isBounceFrame && currentFrameData?.ball_detected && (
+            <div className="rounded-md bg-black/70 px-2 py-1 text-xs backdrop-blur-sm border border-orange-500/30">
+              <span className="text-orange-400">
+                ↻ PITCH
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* v2: Pipeline tier indicators (top right) */}
+        <div className="absolute top-2 right-2 hidden sm:flex items-center gap-1">
+          <div className="rounded-md bg-black/50 px-1.5 py-0.5 text-[9px] text-violet-400 backdrop-blur-sm border border-violet-500/20">
+            v2
+          </div>
         </div>
 
         {/* Keyboard Shortcuts Hint */}

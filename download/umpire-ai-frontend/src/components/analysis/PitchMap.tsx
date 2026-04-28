@@ -6,14 +6,18 @@ import {
   POPPING_CREASE_WIDTH_M,
   COLORS,
 } from '../../lib/constants';
-import type { TrajectoryData, TrajectoryPoint } from '../../types';
+import type { TrajectoryData, TrajectoryPoint, BouncePoint, PredictedPathPoint } from '../../types';
 
 interface PitchMapProps {
   trajectory: TrajectoryData;
   className?: string;
+  /** v2: bounce points to overlay on the pitch */
+  bouncePoints?: BouncePoint[];
+  /** v2: physics-predicted future path */
+  predictedPath?: PredictedPathPoint[];
 }
 
-export function PitchMap({ trajectory, className = '' }: PitchMapProps) {
+export function PitchMap({ trajectory, className = '', bouncePoints = [], predictedPath = [] }: PitchMapProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const draw = useCallback(() => {
@@ -127,8 +131,8 @@ export function PitchMap({ trajectory, className = '' }: PitchMapProps) {
     ctx.setLineDash([]);
 
     // Draw stumps
-    drawStumps(ctx, offsetX, offsetY + pitchH / 2, scale, true);   // bowling end
-    drawStumps(ctx, offsetX + pitchW, offsetY + pitchH / 2, scale, false); // batting end
+    drawStumps(ctx, offsetX, offsetY + pitchH / 2, scale, true);
+    drawStumps(ctx, offsetX + pitchW, offsetY + pitchH / 2, scale, false);
 
     // Draw batsman
     const batsmanX = offsetX + pitchW - 1 * scale;
@@ -164,9 +168,28 @@ export function PitchMap({ trajectory, className = '' }: PitchMapProps) {
       drawImpactMark(ctx, ix, iy, scale);
     }
 
+    // v2: Draw bounce points on the pitch map
+    const allBounces = bouncePoints.length > 0
+      ? bouncePoints
+      : trajectory.bounce_points || [];
+
+    if (allBounces.length > 0) {
+      for (const bp of allBounces) {
+        const bx = offsetX + bp.x * scale;
+        const by = offsetY + pitchH / 2 + bp.y * scale;
+        drawBouncePointOnPitch(ctx, bx, by, scale);
+      }
+    }
+
+    // v2: Draw predicted future path on pitch map
+    if (predictedPath.length > 0 && trajectory.impact_point) {
+      const impactX = offsetX + trajectory.impact_point.x * scale;
+      const impactY = offsetY + pitchH / 2 + trajectory.impact_point.y * scale;
+      drawPredictedPathOnPitch(ctx, impactX, impactY, predictedPath, scale, offsetX + pitchW);
+    }
+
     // Draw predicted path (wicket zone)
     if (trajectory.predicted_path === 'HITTING') {
-      // Draw wicket highlight zone
       ctx.fillStyle = 'rgba(239, 68, 68, 0.15)';
       const stumpW = 3 * scale;
       const stumpH = 12 * scale;
@@ -191,7 +214,7 @@ export function PitchMap({ trajectory, className = '' }: PitchMapProps) {
     }
 
     ctx.restore();
-  }, [trajectory]);
+  }, [trajectory, bouncePoints, predictedPath]);
 
   useEffect(() => {
     draw();
@@ -229,7 +252,6 @@ function drawStumps(
     ctx.fillRect(sx, centerY - stumpH / 2, stumpW, stumpH);
   }
 
-  // Bails
   ctx.fillRect(x - spacing - stumpW / 2, centerY - stumpH / 2 - 1 * scale, spacing * 2 + stumpW, 1 * scale);
   ctx.fillRect(x - spacing - stumpW / 2, centerY + stumpH / 2, spacing * 2 + stumpW, 1 * scale);
   ctx.globalAlpha = 1;
@@ -245,7 +267,6 @@ function drawTrajectory(
 ) {
   if (points.length < 2) return;
 
-  // Ball trajectory from bowler to batsman (x is distance along pitch, y is lateral)
   ctx.beginPath();
   ctx.setLineDash([6, 4]);
   ctx.strokeStyle = COLORS.trajectoryAmber;
@@ -262,7 +283,6 @@ function drawTrajectory(
 }
 
 function drawPitchMark(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
-  // Outer glow
   const glow = ctx.createRadialGradient(x, y, 0, x, y, 12 * scale);
   glow.addColorStop(0, 'rgba(52, 211, 153, 0.3)');
   glow.addColorStop(1, 'rgba(52, 211, 153, 0)');
@@ -271,13 +291,11 @@ function drawPitchMark(ctx: CanvasRenderingContext2D, x: number, y: number, scal
   ctx.fillStyle = glow;
   ctx.fill();
 
-  // Circle
   ctx.beginPath();
   ctx.arc(x, y, 5 * scale, 0, Math.PI * 2);
   ctx.fillStyle = COLORS.pitchMark;
   ctx.fill();
 
-  // Crosshair
   ctx.strokeStyle = COLORS.pitchMark;
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -287,7 +305,6 @@ function drawPitchMark(ctx: CanvasRenderingContext2D, x: number, y: number, scal
   ctx.lineTo(x, y + 8 * scale);
   ctx.stroke();
 
-  // Label
   ctx.fillStyle = COLORS.pitchMark;
   ctx.font = `bold ${Math.max(9, 10 * scale)}px monospace`;
   ctx.textAlign = 'center';
@@ -295,7 +312,6 @@ function drawPitchMark(ctx: CanvasRenderingContext2D, x: number, y: number, scal
 }
 
 function drawImpactMark(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
-  // Diamond shape
   const size = 6 * scale;
   ctx.beginPath();
   ctx.moveTo(x, y - size);
@@ -309,11 +325,100 @@ function drawImpactMark(ctx: CanvasRenderingContext2D, x: number, y: number, sca
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Label
   ctx.fillStyle = COLORS.impactMark;
   ctx.font = `bold ${Math.max(9, 10 * scale)}px monospace`;
   ctx.textAlign = 'center';
   ctx.fillText('IMPACT', x, y - size - 6 * scale);
+}
+
+// ─── v2: Bounce point on pitch map ─────────────────────────
+
+function drawBouncePointOnPitch(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  scale: number,
+) {
+  // Orange concentric circles for bounce
+  const radius = 6 * scale;
+
+  // Outer ring
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(251, 146, 60, 0.6)'; // orange-400
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Inner filled dot
+  ctx.beginPath();
+  ctx.arc(x, y, 2.5 * scale, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(251, 146, 60, 0.8)';
+  ctx.fill();
+
+  // Label
+  ctx.font = `bold ${Math.max(8, 9 * scale)}px monospace`;
+  ctx.fillStyle = 'rgba(251, 146, 60, 0.7)';
+  ctx.textAlign = 'center';
+  ctx.fillText('BOUNCE', x, y - radius - 4 * scale);
+}
+
+// ─── v2: Predicted future path on pitch map ────────────────
+
+function drawPredictedPathOnPitch(
+  ctx: CanvasRenderingContext2D,
+  startX: number,
+  startY: number,
+  predictedPath: PredictedPathPoint[],
+  scale: number,
+  battingEndX: number,
+) {
+  if (predictedPath.length === 0) return;
+
+  // Draw dashed cyan line from impact point toward stumps
+  ctx.beginPath();
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = 'rgba(34, 211, 238, 0.5)'; // cyan
+  ctx.lineWidth = 1.5;
+
+  const totalSteps = Math.min(predictedPath.length, 12);
+  const totalDist = battingEndX - startX;
+
+  for (let i = 0; i < totalSteps; i++) {
+    const pp = predictedPath[i];
+    const progress = (i + 1) / totalSteps;
+    const px = startX + totalDist * progress;
+    // Use the predicted path's lateral deviation
+    const lateralOffset = (pp.x - predictedPath[0].x) * scale * 50;
+    const py = startY + lateralOffset;
+
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+
+    // Small dot at each step
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(px, py, 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(34, 211, 238, 0.5)';
+    ctx.fill();
+    ctx.setLineDash([3, 3]);
+    ctx.restore();
+  }
+
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // "PREDICTED" label at the end
+  if (totalSteps > 0) {
+    const lastPP = predictedPath[totalSteps - 1];
+    const endX = startX + totalDist;
+    const endY = startY + (lastPP.x - predictedPath[0].x) * scale * 50;
+
+    ctx.font = `${Math.max(8, 9 * scale)}px monospace`;
+    ctx.fillStyle = 'rgba(34, 211, 238, 0.5)';
+    ctx.textAlign = 'center';
+    ctx.fillText('PREDICTED PATH', (startX + endX) / 2, endY - 10 * scale);
+  }
 }
 
 function drawDeviation(
@@ -331,7 +436,6 @@ function drawDeviation(
   // Background
   ctx.fillStyle = 'rgba(15, 23, 42, 0.8)';
   ctx.beginPath();
-  // roundRect fallback
   const rr = 6;
   ctx.moveTo(-35 + rr, -20);
   ctx.lineTo(35 - rr, -20);
@@ -347,7 +451,6 @@ function drawDeviation(
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Arrow showing direction
   const angle = (degrees * Math.PI) / 180;
   ctx.rotate(angle);
 
@@ -363,10 +466,8 @@ function drawDeviation(
 
   ctx.restore();
 
-  // Text
   ctx.fillStyle = 'rgba(148, 163, 184, 0.6)';
   ctx.font = '9px monospace';
   ctx.textAlign = 'center';
   ctx.fillText(`${degrees.toFixed(1)}°`, x, y + 26);
 }
-

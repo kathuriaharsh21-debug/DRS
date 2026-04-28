@@ -7,6 +7,10 @@ import {
   Timer,
   Crosshair,
   TrendingUp,
+  Cpu,
+  Eye,
+  GitBranch,
+  Cog,
 } from 'lucide-react';
 import type { AnalysisResultResponse } from '../../types';
 
@@ -24,6 +28,8 @@ export function StatsPanel({ result }: StatsPanelProps) {
     result.frames.length > 0
       ? result.frames.reduce((sum, f) => sum + f.confidence, 0) / result.frames.length
       : 0;
+  const bounceCount = result.trajectory.bounce_points?.length || result.bounce_points?.length || 0;
+  const pipeline = result.pipeline;
 
   const stats = [
     {
@@ -49,7 +55,7 @@ export function StatsPanel({ result }: StatsPanelProps) {
     },
     {
       icon: Activity,
-      label: 'Avg Detection Confidence',
+      label: 'Avg Confidence',
       value: `${(avgConfidence * 100).toFixed(0)}%`,
       sublabel: avgConfidence > 0.9 ? 'High' : avgConfidence > 0.7 ? 'Medium' : 'Low',
       color: avgConfidence > 0.9 ? 'text-emerald-400' : avgConfidence > 0.7 ? 'text-amber-400' : 'text-red-400',
@@ -72,6 +78,36 @@ export function StatsPanel({ result }: StatsPanelProps) {
 
   return (
     <div className="space-y-4">
+      {/* v2 Pipeline Tier Badges */}
+      {pipeline && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-300 mb-3">
+            <Cpu className="h-4 w-4 text-violet-400" />
+            Pipeline Configuration
+          </h3>
+          <div className="grid grid-cols-3 gap-2">
+            <TierBadge
+              icon={Eye}
+              label="Detection"
+              value={formatTier(pipeline.detection_tier)}
+              color={pipeline.detection_tier === 'yolo' ? 'emerald' : 'amber'}
+            />
+            <TierBadge
+              icon={GitBranch}
+              label="Tracking"
+              value={formatTier(pipeline.tracking_tier)}
+              color={pipeline.tracking_tier === 'botsort' ? 'emerald' : 'amber'}
+            />
+            <TierBadge
+              icon={Cog}
+              label="Trajectory"
+              value={pipeline.trajectory_filter === 'ukf' ? 'UKF+Physics' : 'Linear KF'}
+              color={pipeline.trajectory_filter === 'ukf' ? 'emerald' : 'amber'}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {stats.map((stat) => (
@@ -101,7 +137,7 @@ export function StatsPanel({ result }: StatsPanelProps) {
             label="Pitch Point"
             value={
               result.trajectory.pitch_point
-                ? `(${result.trajectory.pitch_point.x.toFixed(1)}, ${result.trajectory.pitch_point.y.toFixed(1)})`
+                ? `(${result.trajectory.pitch_point.x.toFixed(3)}, ${result.trajectory.pitch_point.y.toFixed(3)})`
                 : 'Not detected'
             }
           />
@@ -110,9 +146,14 @@ export function StatsPanel({ result }: StatsPanelProps) {
             label="Impact Point"
             value={
               result.trajectory.impact_point
-                ? `(${result.trajectory.impact_point.x.toFixed(1)}, ${result.trajectory.impact_point.y.toFixed(1)})`
+                ? `(${result.trajectory.impact_point.x.toFixed(3)}, ${result.trajectory.impact_point.y.toFixed(3)})`
                 : 'Not detected'
             }
+          />
+          <InfoRow
+            icon={Crosshair}
+            label="Bounces Detected"
+            value={bounceCount > 0 ? `${bounceCount} bounce${bounceCount > 1 ? 's' : ''}` : 'None'}
           />
           <InfoRow
             icon={Compass}
@@ -124,6 +165,14 @@ export function StatsPanel({ result }: StatsPanelProps) {
             label="Trajectory Points"
             value={`${result.trajectory.points.length} points tracked`}
           />
+          {result.predicted_stump_hit !== undefined && (
+            <InfoRow
+              icon={TrendingUp}
+              label="Stump Hit Prediction"
+              value={result.predicted_stump_hit ? 'HITTING' : 'MISSING'}
+              valueColor={result.predicted_stump_hit ? 'text-red-400' : 'text-blue-400'}
+            />
+          )}
         </div>
       </div>
 
@@ -163,16 +212,56 @@ export function StatsPanel({ result }: StatsPanelProps) {
   );
 }
 
-// ─── Sub-component ─────────────────────────────────────────
+// ─── Sub-components ──────────────────────────────────────
+
+function TierBadge({
+  icon: Icon,
+  label,
+  value,
+  color,
+}: {
+  icon: React.FC<{ className?: string }>;
+  label: string;
+  value: string;
+  color: 'emerald' | 'amber';
+}) {
+  const borderColor = color === 'emerald' ? 'border-emerald-500/20' : 'border-amber-500/20';
+  const textColor = color === 'emerald' ? 'text-emerald-400' : 'text-amber-400';
+  const bgColor = color === 'emerald' ? 'bg-emerald-500/5' : 'bg-amber-500/5';
+
+  return (
+    <div className={`rounded-lg border ${borderColor} ${bgColor} p-2 text-center`}>
+      <div className="flex items-center justify-center gap-1 mb-1">
+        <Icon className={`h-3 w-3 ${textColor}`} />
+        <span className="text-[10px] text-slate-500">{label}</span>
+      </div>
+      <div className={`text-xs font-bold ${textColor}`}>{value}</div>
+    </div>
+  );
+}
+
+function formatTier(tier: string): string {
+  const map: Record<string, string> = {
+    yolo: 'YOLOv11+P2',
+    classical: 'HSV+MOG2',
+    auto: 'Auto',
+    botsort: 'BoT-SORT',
+    ukf: 'UKF+Physics',
+    linear_kf: 'Linear KF',
+  };
+  return map[tier] || tier;
+}
 
 function InfoRow({
   icon: Icon,
   label,
   value,
+  valueColor,
 }: {
   icon: React.FC<{ className?: string }>;
   label: string;
   value: string;
+  valueColor?: string;
 }) {
   return (
     <div className="flex items-center justify-between gap-4 py-1.5 border-b border-slate-800/50 last:border-0">
@@ -180,7 +269,7 @@ function InfoRow({
         <Icon className="h-3.5 w-3.5" />
         {label}
       </div>
-      <span className="text-xs font-mono text-slate-300">{value}</span>
+      <span className={`text-xs font-mono ${valueColor || 'text-slate-300'}`}>{value}</span>
     </div>
   );
 }
