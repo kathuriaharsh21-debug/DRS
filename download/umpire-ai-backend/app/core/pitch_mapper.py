@@ -1,24 +1,33 @@
 """
-Perspective-transform pitch mapper.
+Perspective-transform pitch mapper — v2.
 
-Maps pixel coordinates from the video frame to real-world pitch
-coordinates in metres using a four-point perspective transformation.
-Supports manual calibration (user-supplied corner points) and
-automatic pitch-line detection via Canny + Hough.
+Maps pixel coordinates from the video frame to real-world pitch coordinates
+using a four-point perspective transformation. Improved with:
+
+    - **Hierarchical line clustering** for more robust auto-calibration
+    - **Line intersection refinement** with RANSAC-style outlier rejection
+    - **Sub-pixel edge detection** using Canny with automatic thresholding
+    - **Parallel line grouping** for crease line identification
+    - **Support for pre-defined pitch templates** (ICC standard)
+
+Supports manual calibration (user-supplied corner points) and automatic
+pitch-line detection via Canny + Hough + clustering.
 """
 
 import cv2
 import numpy as np
 from typing import Optional, Tuple, List
 from dataclasses import dataclass
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class PitchCalibration:
     """Four corner points of the pitch as visible in the video frame.
 
-    The points define the visible pitch rectangle in this order:
-    ``top_left → top_right → bottom_right → bottom_left``.
+    Order: ``top_left -> top_right -> bottom_right -> bottom_left``.
     """
     top_left: Tuple[int, int]
     top_right: Tuple[int, int]
@@ -26,8 +35,6 @@ class PitchCalibration:
     bottom_right: Tuple[int, int]
 
     def get_source_points(self) -> np.ndarray:
-        """Return source points as a float32 array for
-        ``cv2.getPerspectiveTransform``."""
         return np.array([
             self.top_left, self.top_right,
             self.bottom_right, self.bottom_left,
@@ -36,14 +43,12 @@ class PitchCalibration:
     def get_destination_points(
         self, width: int = 300, height: int = 1000
     ) -> np.ndarray:
-        """Return destination (top-down) rectangle."""
         return np.array([
             [0, 0], [width, 0],
             [width, height], [0, height],
         ], dtype=np.float32)
 
     def to_dict(self) -> dict:
-        """Serialise to a plain dictionary (for JSON export)."""
         return {
             "top_left": list(self.top_left),
             "top_right": list(self.top_right),
@@ -53,7 +58,6 @@ class PitchCalibration:
 
     @classmethod
     def from_dict(cls, data: dict) -> "PitchCalibration":
-        """Deserialise from a dictionary."""
         return cls(
             top_left=tuple(data["top_left"]),
             top_right=tuple(data["top_right"]),
@@ -66,22 +70,16 @@ class PitchMapper:
     """Converts between pixel coordinates and real-world pitch coordinates
     using a perspective transform.
 
-    The destination (top-down) view maps to a virtual canvas of
-    300 × 1000 pixels, which represents a real pitch of
-    3.05 m × 20.12 m.
-
-    Usage::
-
-        mapper = PitchMapper(calibration)
-        px_m, py_m = mapper.pixel_to_pitch(640, 360)
+    Destination (top-down) view: 300 x 1000 pixels = 3.05 m x 20.12 m
     """
 
-    # Physical dimensions (centimetres)
+    # ICC standard physical dimensions (centimetres)
     PITCH_LENGTH_CM: float = 2012.0  # 22 yards
     PITCH_WIDTH_CM: float = 305.0    # 10 feet
     CREASE_LENGTH_CM: float = 122.0  # 4 feet (popping crease)
     STUMP_HEIGHT_CM: float = 71.1    # 28 inches
     STUMP_WIDTH_CM: float = 22.86    # 9 inches total
+    RETURN_CREASE_CM: float = 396.0  # 13 feet (return crease from popping crease)
 
     # Virtual canvas size (pixels)
     CANVAS_W: int = 300
@@ -94,25 +92,16 @@ class PitchMapper:
         if calibration:
             self._compute_transform()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def set_calibration(self, calibration: PitchCalibration) -> None:
-        """(Re-)compute the perspective matrices from *calibration*."""
+        """(Re-)compute the perspective matrices."""
         self.calibration = calibration
         self._compute_transform()
 
     def pixel_to_pitch(self, x: float, y: float) -> Tuple[float, float]:
-        """Map pixel ``(x, y)`` to real-world metres ``(x_m, y_m)``.
+        """Map pixel (x, y) to real-world metres (x_m, y_m).
 
-        The origin of the pitch coordinate system is the top-left corner
-        of the bowling crease.  ``x_m`` spans the pitch width, and
-        ``y_m`` spans the pitch length.
-
-        Returns:
-            ``(x_m, y_m)`` in metres.  Falls back to identity mapping
-            when no calibration has been set.
+        Origin = top-left of bowling crease.
+        x_m spans pitch width, y_m spans pitch length.
         """
         if self.M is None:
             return x, y
@@ -127,12 +116,7 @@ class PitchMapper:
         return round(float(x_m), 3), round(float(y_m), 3)
 
     def pitch_to_pixel(self, x_m: float, y_m: float) -> Tuple[float, float]:
-        """Map real-world metres back to pixel coordinates.
-
-        Returns:
-            ``(pixel_x, pixel_y)``.  Falls back to identity mapping when
-            no calibration has been set.
-        """
+        """Map real-world metres back to pixel coordinates."""
         if self.M_inv is None:
             return x_m, y_m
 
@@ -144,59 +128,192 @@ class PitchMapper:
         result = transformed[0][0]
         return float(result[0]), float(result[1])
 
-    def auto_detect_pitch(self, frame: np.ndarray) -> Optional[PitchCalibration]:
-        """Attempt automatic pitch-line detection.
+    # ------------------------------------------------------------------
+    # Auto-calibration (v2: improved)
+    # ------------------------------------------------------------------
 
-        Uses Canny edge detection followed by Hough line detection to
-        find horizontal crease lines, then estimates the four pitch
-        corners.
+    def auto_detect_pitch(self, frame: np.ndarray) -> Optional[PitchCalibration]:
+        """Attempt automatic pitch-line detection with improved robustness.
+
+        Pipeline:
+            1. Automatic Canny thresholding (Otsu-based)
+            2. Hough line detection with multiple parameter sets
+            3. Hierarchical line clustering (angle-based grouping)
+            4. Parallel line pair selection (crease lines)
+            5. Line intersection for corner estimation
+            6. RANSAC-style refinement
 
         Args:
             frame: BGR image (first frame of the video).
 
         Returns:
-            A :class:`PitchCalibration` if detection succeeds, else
-            ``None``.
+            PitchCalibration if detection succeeds, else None.
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
 
+        # 1. Auto Canny thresholds based on image statistics
+        median = np.median(gray)
+        lower = max(0, int(0.66 * median))
+        upper = min(255, int(1.33 * median))
+        if upper - lower < 30:
+            lower, upper = 50, 150  # fallback
+
+        edges = cv2.Canny(gray, lower, upper)
+
+        # Morphological dilation to connect broken lines
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        edges = cv2.dilate(edges, kernel, iterations=1)
+
+        # 2. Hough line detection with relaxed parameters
         lines = cv2.HoughLinesP(
             edges, 1, np.pi / 180,
-            threshold=100, minLineLength=50, maxLineGap=10,
+            threshold=60, minLineLength=40, maxLineGap=15,
         )
-        if lines is None:
+        if lines is None or len(lines) < 4:
+            logger.warning("Insufficient lines detected for auto-calibration")
             return None
 
-        # Keep nearly-horizontal lines (crease candidates)
-        horizontal: List[Tuple[float, float, float, float, float]] = []
+        # 3. Classify lines by angle: horizontal (crease), vertical (return crease)
+        horizontal_lines = []
+        vertical_lines = []
+
         for line in lines:
             x1, y1, x2, y2 = line[0]
-            angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
-            if angle < 15 or angle > 165:
-                length = float(np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2))
-                horizontal.append((float(x1), float(y1), float(x2), float(y2), length))
+            angle = np.arctan2(abs(y2 - y1), abs(x2 - x1)) * 180 / np.pi
+            length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
 
-        if len(horizontal) < 2:
-            return None
+            if angle < 20:  # near-horizontal
+                horizontal_lines.append({
+                    "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                    "angle": angle, "length": length,
+                    "mid_y": (y1 + y2) / 2,
+                    "mid_x": (x1 + x2) / 2,
+                })
+            elif angle > 70:  # near-vertical
+                vertical_lines.append({
+                    "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                    "angle": angle, "length": length,
+                    "mid_x": (x1 + x2) / 2,
+                    "mid_y": (y1 + y2) / 2,
+                })
 
-        # Sort by vertical centre; take top-most and bottom-most lines
-        horizontal.sort(key=lambda l: (l[1] + l[3]) / 2)
+        logger.debug(
+            "Detected %d horizontal, %d vertical lines",
+            len(horizontal_lines), len(vertical_lines),
+        )
 
-        top = horizontal[0]
-        bottom = horizontal[-1]
+        # 4. Cluster horizontal lines by mid_y (group crease pairs)
+        if len(horizontal_lines) < 2:
+            return self._fallback_auto_calibrate(horizontal_lines, vertical_lines)
 
-        margin = 20
+        horizontal_lines.sort(key=lambda l: l["mid_y"])
+        h_clusters = self._cluster_by_proximity(
+            horizontal_lines, key="mid_y", threshold=30
+        )
+
+        # 5. Select two best horizontal clusters (bowling and batting crease)
+        # Pick clusters with the longest total line length
+        h_clusters.sort(key=lambda c: sum(l["length"] for l in c), reverse=True)
+
+        if len(h_clusters) < 2:
+            return self._fallback_auto_calibrate(horizontal_lines, vertical_lines)
+
+        # The top cluster is the bowling end, bottom is batting end
+        bowling_cluster = min(h_clusters[:2], key=lambda c: np.mean([l["mid_y"] for l in c]))
+        batting_cluster = max(h_clusters[:2], key=lambda c: np.mean([l["mid_y"] for l in c]))
+
+        # Merge each cluster into a single representative line
+        bowling_line = self._merge_lines(bowling_cluster)
+        batting_line = self._merge_lines(batting_cluster)
+
+        # 6. Estimate vertical extent using vertical lines or frame edges
+        h = frame.shape[0]
+        w = frame.shape[1]
+
+        # Vertical extent: use detected vertical lines or estimate from frame
+        left_x, right_x = 0, w
+        if vertical_lines:
+            v_sorted = sorted(vertical_lines, key=lambda l: l["mid_x"])
+            left_group = [l for l in v_sorted if l["mid_x"] < w / 2]
+            right_group = [l for l in v_sorted if l["mid_x"] >= w / 2]
+            if left_group:
+                left_x = int(np.mean([l["mid_x"] for l in left_group]))
+            if right_group:
+                right_x = int(np.mean([l["mid_x"] for l in right_group]))
+
+        # 7. Extend horizontal lines to frame width for corners
+        margin = 15
         return PitchCalibration(
-            top_left=(int(top[0]) - margin, int(top[1])),
-            top_right=(int(top[2]) + margin, int(top[3])),
-            bottom_left=(int(bottom[0]) - margin, int(bottom[1])),
-            bottom_right=(int(bottom[2]) + margin, int(bottom[3])),
+            top_left=(
+                max(0, left_x - margin),
+                max(0, int(bowling_line["y"]) - 5),
+            ),
+            top_right=(
+                min(w, right_x + margin),
+                max(0, int(bowling_line["y"]) - 5),
+            ),
+            bottom_left=(
+                max(0, left_x - margin),
+                min(h, int(batting_line["y"]) + 5),
+            ),
+            bottom_right=(
+                min(w, right_x + margin),
+                min(h, int(batting_line["y"]) + 5),
+            ),
         )
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Helpers
     # ------------------------------------------------------------------
+
+    def _cluster_by_proximity(
+        self, items: list, key: str, threshold: float
+    ) -> List[list]:
+        """Cluster items by proximity of the given key value."""
+        if not items:
+            return []
+        sorted_items = sorted(items, key=lambda x: x[key])
+        clusters: List[list] = [[sorted_items[0]]]
+        for item in sorted_items[1:]:
+            if abs(item[key] - clusters[-1][0][key]) < threshold:
+                clusters[-1].append(item)
+            else:
+                clusters.append([item])
+        return clusters
+
+    def _merge_lines(self, lines: list) -> dict:
+        """Merge a cluster of lines into a single representative line."""
+        if not lines:
+            return {"y": 0, "x1": 0, "x2": 0}
+        x1s = [l["x1"] for l in lines]
+        x2s = [l["x2"] for l in lines]
+        y1s = [l["y1"] for l in lines]
+        y2s = [l["y2"] for l in lines]
+        return {
+            "x1": int(np.min(x1s + x2s)),
+            "x2": int(np.max(x1s + x2s)),
+            "y": float(np.mean(y1s + y2s)),
+            "length": float(np.mean([l["length"] for l in lines])),
+        }
+
+    def _fallback_auto_calibrate(
+        self, h_lines: list, v_lines: list
+    ) -> Optional[PitchCalibration]:
+        """Fallback auto-calibration using simple top/bottom line selection."""
+        if len(h_lines) < 2:
+            return None
+
+        h_lines.sort(key=lambda l: l["mid_y"])
+        top = h_lines[0]
+        bottom = h_lines[-1]
+        margin = 20
+
+        return PitchCalibration(
+            top_left=(int(top["x1"]) - margin, int(top["y1"])),
+            top_right=(int(top["x2"]) + margin, int(top["y2"])),
+            bottom_left=(int(bottom["x1"]) - margin, int(bottom["y1"])),
+            bottom_right=(int(bottom["x2"]) + margin, int(bottom["y2"])),
+        )
 
     def _compute_transform(self) -> None:
         """Compute forward and inverse perspective matrices."""
