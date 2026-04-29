@@ -655,8 +655,8 @@ class TrajectoryEstimator:
         if len(np.unique(ys)) < 2:
             return False
 
-        # Stump line at y = 0.9 (batsman end in normalised coords)
-        stump_y = 0.9
+        # Stump line at y = 0.95 (batsman end in normalised coords)
+        stump_y = 0.95
 
         # Try quadratic fit if we have enough points (accounts for swing)
         if len(recent) >= 8:
@@ -674,6 +674,6 @@ class TrajectoryEstimator:
 
         # Stump zone: ICC stumps are 9 inches (22.86cm) wide on a
         # 10 feet (305cm) pitch → roughly 7.5% of pitch width
-        # We use 8% to give some margin for measurement error
-        stump_half_width = 0.08
+        # We use 12% to give more margin for real-world measurement error
+        stump_half_width = 0.12
         return abs(predicted_x - 0.5) < stump_half_width

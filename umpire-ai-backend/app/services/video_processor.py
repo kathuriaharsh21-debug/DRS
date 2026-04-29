@@ -280,7 +280,8 @@ class VideoProcessor:
 
             # === Phase 6: Build trajectory data for decision engine ===
             trajectory_data = self._build_trajectory_data(
-                trajectory_result, per_frame_data, impact_idx
+                trajectory_result, per_frame_data, impact_idx,
+                frame_skip=frame_skip,
             )
 
             # === Phase 7: Decision engine ===
@@ -382,130 +383,82 @@ class VideoProcessor:
     def _detect_release_frame(
         detections: List[Dict[str, Any]],
         frame_height: int,
-        min_detections: int = 4,
+        min_detections: int = 6,
     ) -> Optional[int]:
-        """Detect the frame where the ball is fully airborne from bowler's hand.
-
-        Strategy (v5 — inspired by Hawk-Eye release detection):
-
-        Hawk-Eye tracks from the moment the ball is **fully visible as a
-        separate object in the air** after leaving the bowler's hand.
-        The key insight is that the ball, once released, exhibits a set of
-        characteristics that clearly distinguish it from the run-up phase:
-
-        During the run-up:
-          - Ball is in the bowler's hand (occluded by body, or detected
-            as part of the bowler — large radius, low confidence)
-          - Ball position follows the bowler's body movement
-          - Velocity is moderate (bowler running speed, not ball speed)
-          - Ball is typically in the LOWER portion of the frame (close to
-            the camera)
-
-        After release:
-          - Ball is a small, round, fast-moving projectile
-          - Ball radius is CONSISTENT and SMALL (3-15px typical from umpire cam)
-          - Ball moves rapidly in one direction (down the pitch)
-          - Ball appears in the UPPER-MIDDLE portion of the frame (above
-            bowler's head, which is the release point)
-          - Detections become CONSISTENT (every frame or nearly so)
-
-        We use three independent signals and require at least 2 of 3:
-          1. **Size signal**: Ball radius drops to <= median (airborne = smaller)
-          2. **Position signal**: Ball y < 55% of frame height (upper portion)
-          3. **Velocity signal**: Ball speed > median (airborne = faster than run-up)
-
-        When 2+ signals agree for N consecutive frames, that cluster starts
-        at the release frame.
-
+        """Detect ball release using velocity/jerk analysis.
+    
+        Real DRS starts tracking when the ball becomes a FAST-MOVING PROJECTILE.
+        During run-up, ball moves with bowler (low speed, high y-position). 
+        At release, ball suddenly ACCELERATES and moves down the pitch rapidly.
+        
+        Key signals:
+        1. VELOCITY JUMP: Ball speed suddenly increases (release = acceleration)
+        2. Y-DIRECTION CHANGE: Ball starts moving downward (toward batsman)
+        3. ACCELERATION (jerk): Second derivative of position spikes at release
+        
+        We find the frame with maximum acceleration in the first half of detections.
+        
         Returns index into the detections list, or None if indeterminate.
         """
         if len(detections) < min_detections:
             return None
-
+    
         n = len(detections)
-
-        # --- Compute per-frame velocity ---
-        velocities = [0.0]
+    
+        # Compute per-frame velocities
+        vx_list = []
+        vy_list = []
         for i in range(1, n):
-            dx = detections[i]["x"] - detections[i - 1]["x"]
-            dy = detections[i]["y"] - detections[i - 1]["y"]
-            dt = max(detections[i]["timestamp"] - detections[i - 1]["timestamp"], 1e-6)
-            speed = float(np.sqrt(dx * dx + dy * dy)) / dt
-            velocities.append(speed)
-
-        # Smooth velocities
-        win = min(5, max(3, n // 4))
-        smoothed_vel = np.convolve(velocities, np.ones(win) / win, mode="same").tolist()
-
-        # --- Compute radius statistics ---
-        radii = [d["radius"] for d in detections]
-        median_rad = float(np.median(radii))
-
-        # --- Compute velocity statistics (exclude first frame) ---
-        vel_arr = np.array(velocities[1:], dtype=np.float64)
-        median_vel = float(np.median(vel_arr)) if len(vel_arr) > 0 else 100.0
-
-        # --- Score each frame with 3 independent signals ---
-        # Each signal is True (1) or False (0)
-        # Release requires at least 2 of 3 signals = True for consecutive frames
-        scores = []
-        for i in range(n):
-            d = detections[i]
-            r = d["radius"]
-            y = d["y"]
-            v = smoothed_vel[i] if i < len(smoothed_vel) else 0
-
-            # Signal 1: SMALL SIZE — ball is at-or-below median radius
-            # (airborne ball is typically smaller than run-up ball-in-hand)
-            sig_small = 1 if r <= median_rad * 1.05 else 0
-
-            # Signal 2: UPPER POSITION — ball is in upper 55% of frame
-            # (release point is above bowler's torso in umpire camera)
-            sig_high = 1 if y < frame_height * 0.55 else 0
-
-            # Signal 3: FAST MOVEMENT — ball speed above median
-            # (airborne ball moves faster than bowler's running speed)
-            sig_fast = 1 if v > median_vel * 0.6 else 0
-
-            scores.append((sig_small + sig_high + sig_fast, sig_small, sig_high, sig_fast))
-
-        # --- Find first cluster with score >= 2 for N consecutive frames ---
-        required_consecutive = max(2, min(4, n // 5))
-        consecutive = 0
-
-        for i in range(n):
-            total, s_small, s_high, s_fast = scores[i]
-            if total >= 2:
-                consecutive += 1
-                if consecutive >= required_consecutive:
-                    # Found the start of the airborne cluster
-                    cluster_start = i - consecutive + 1
-                    # Walk backward to include any preceding frames that
-                    # also look airborne (score >= 1 means at least one signal)
-                    while cluster_start > 0 and scores[cluster_start - 1][0] >= 1:
-                        cluster_start -= 1
-                    return cluster_start
-            else:
-                consecutive = 0
-
-        # --- FALLBACK 1: Highest point detection ---
-        # The ball reaches its highest point (lowest y on screen) near release
-        # Search in the first 60% of detections
-        search_limit = max(n * 3 // 5, 8)
-        min_y = frame_height
-        min_y_idx = 0
-        for i in range(min(search_limit, n)):
-            if detections[i]["y"] < min_y:
-                min_y = detections[i]["y"]
-                min_y_idx = i
-
-        # Release is 1-2 frames before the highest point
-        candidate = max(0, min_y_idx - 2)
+            dx = detections[i]["x"] - detections[i-1]["x"]
+            dy = detections[i]["y"] - detections[i-1]["y"]
+            dt = max(detections[i]["timestamp"] - detections[i-1]["timestamp"], 1e-6)
+            vx_list.append(dx / dt)
+            vy_list.append(dy / dt)
+    
+        if len(vx_list) < 3:
+            return 0
+    
+        # Compute acceleration (change in velocity)
+        ax_list = []
+        for i in range(1, len(vx_list)):
+            dt = max(detections[i+1]["timestamp"] - detections[i]["timestamp"], 1e-6)
+            ax = (vx_list[i] - vx_list[i-1]) / dt
+            ay = (vy_list[i] - vy_list[i-1]) / dt
+            accel_mag = float(np.sqrt(ax*ax + ay*ay))
+            ax_list.append(accel_mag)
+    
+        if not ax_list:
+            return 0
+    
+        # Smooth accelerations
+        win = min(3, max(2, len(ax_list) // 4))
+        if win > 1 and len(ax_list) >= win:
+            kernel = np.ones(win) / win
+            smoothed_accel = np.convolve(ax_list, kernel, mode='same').tolist()
+        else:
+            smoothed_accel = ax_list
+    
+        # Search in first 50% of detections for maximum acceleration
+        search_limit = max(len(smoothed_accel) // 2, 5)
+    
+        # Find the peak acceleration
+        peak_idx = 0
+        peak_val = 0
+        for i in range(min(search_limit, len(smoothed_accel))):
+            if smoothed_accel[i] > peak_val:
+                peak_val = smoothed_accel[i]
+                peak_idx = i
+    
+        # Release is 1-2 frames BEFORE the acceleration peak
+        # (acceleration peaks just after release as ball reaches max speed)
+        release_idx = max(0, peak_idx - 1)
+    
         logger.info(
-            "Release detection: using highest-point fallback (idx=%d, y=%d)",
-            candidate, min_y
+            "Release detection: acceleration-based (peak_idx=%d, release_idx=%d, "
+            "peak_accel=%.1f)",
+            peak_idx, release_idx, peak_val,
         )
-        return candidate
+        return release_idx
 
     # ------------------------------------------------------------------
     # Impact detection
@@ -517,71 +470,64 @@ class VideoProcessor:
         release_idx: Optional[int],
         frame_height: int,
     ) -> Optional[int]:
-        """Detect the frame where the ball impacts the batsman's pad.
-
-        Strategy:
-        1. Only look at detections after the release frame
-        2. The ball should be in the lower portion of frame (near batsman)
-        3. Impact is characterised by a sudden deceleration or disappearance
-        4. Look for the last frame where the ball is still moving fast
-           before it either disappears or slows dramatically
-
+        """Detect ball impact with batsman's pad.
+    
+        Impact is characterized by:
+        1. Sudden DECELERATION (ball hits pad and slows/stops)
+        2. Ball is in lower portion of frame (near batsman)
+        3. After impact, ball may disappear or move erratically
+    
+        Strategy: Walk forward from release, find first significant speed drop
+        that persists for multiple frames.
+    
         Returns index into the detections list, or None.
         """
         if len(detections) < 5:
             return None
-
+    
         start_idx = release_idx if release_idx is not None else 0
-        if start_idx >= len(detections):
-            return None
-
+        if start_idx >= len(detections) - 3:
+            return len(detections) - 1
+    
         post_release = detections[start_idx:]
-        if len(post_release) < 3:
+        if len(post_release) < 4:
             return len(detections) - 1
-
-        # Compute velocities in post-release
-        velocities = []
+    
+        # Compute speeds
+        speeds = []
         for i in range(1, len(post_release)):
-            dx = post_release[i]["x"] - post_release[i - 1]["x"]
-            dy = post_release[i]["y"] - post_release[i - 1]["y"]
-            dt = max(post_release[i]["timestamp"] - post_release[i - 1]["timestamp"], 1e-6)
-            speed = float(np.sqrt(dx * dx + dy * dy)) / dt
-            velocities.append(speed)
-
-        if not velocities:
+            dx = post_release[i]["x"] - post_release[i-1]["x"]
+            dy = post_release[i]["y"] - post_release[i-1]["y"]
+            dt = max(post_release[i]["timestamp"] - post_release[i-1]["timestamp"], 1e-6)
+            speed = float(np.sqrt(dx*dx + dy*dy)) / dt
+            speeds.append(speed)
+    
+        if not speeds:
             return len(detections) - 1
-
-        # The ball is in the batsman zone (lower 40% of frame)
-        batsman_zone_y = frame_height * 0.6
-
-        # Find the last frame where ball is still moving reasonably fast
-        # and is in the batsman zone
-        median_vel = float(np.median(velocities))
-        slowdown_threshold = median_vel * 0.3  # significant slowdown
-
-        # Walk backwards from end to find last fast frame
-        last_fast_idx = len(velocities) - 1
-        for i in range(len(velocities) - 1, -1, -1):
-            det = post_release[i + 1]
-            in_batsman_zone = det["y"] >= batsman_zone_y
-
-            if velocities[i] > slowdown_threshold:
-                last_fast_idx = i
-                break
-
-        # Also check if there are trailing detections with very low velocity
-        # (ball sitting on pad / ground) — include those as impact
-        trailing_slow = 0
-        for i in range(last_fast_idx + 1, len(velocities)):
-            if velocities[i] < slowdown_threshold:
-                trailing_slow += 1
-            else:
-                break
-
-        impact_local_idx = last_fast_idx + min(trailing_slow, 2)
-        impact_local_idx = min(impact_local_idx, len(post_release) - 1)
-
-        return start_idx + impact_local_idx
+    
+        # Smooth speeds
+        win = min(3, max(2, len(speeds) // 4))
+        if win > 1:
+            kernel = np.ones(win) / win
+            smoothed = np.convolve(speeds, kernel, mode='same').tolist()
+        else:
+            smoothed = speeds
+    
+        median_speed = float(np.median(speeds))
+        if median_speed < 10:
+            return len(detections) - 1
+    
+        # Find where speed drops below 40% of median (after first reaching high speed)
+        reached_high_speed = False
+        for i in range(len(smoothed)):
+            if smoothed[i] > median_speed * 0.7:
+                reached_high_speed = True
+            if reached_high_speed and smoothed[i] < median_speed * 0.35:
+                # Found impact - this is where ball hits pad
+                return start_idx + i
+    
+        # Fallback: last detection
+        return len(detections) - 1
 
     # ------------------------------------------------------------------
     # Normalised prediction path for frontend
@@ -592,56 +538,61 @@ class VideoProcessor:
         trajectory_result: TrajectoryPrediction,
         frame_shape: Tuple[int, ...],
     ) -> List[Dict[str, float]]:
-        """Build a normalised (0-1) prediction path from impact to stumps.
-
-        Uses the UKF predicted path and the last trajectory points to
-        extrapolate in normalised pitch coordinates, suitable for frontend
-        pitch-map rendering.
+        """Build normalised prediction path from impact point to stumps.
+    
+        Uses quadratic extrapolation from the LAST segment of the trajectory
+        (post-pitch path) to predict where the ball would go at the stump line.
         """
-        if not trajectory_result.points or len(trajectory_result.points) < 3:
+        if not trajectory_result.points or len(trajectory_result.points) < 4:
             return []
-
-        h, w = frame_shape[:2]
+    
         points = trajectory_result.points
-
-        # Last 5 points for linear regression
-        recent = points[-min(5, len(points)):]
+    
+        # Use last N points for extrapolation (post-bounce trajectory)
+        n_fit = min(8, max(4, len(points) // 2))
+        recent = points[-n_fit:]
+    
+        # Fit quadratic: x = a*y^2 + b*y + c
         ys = np.array([p.y for p in recent])
         xs = np.array([p.x for p in recent])
-
+    
         if len(np.unique(ys)) < 2:
             return []
-
-        # Fit x = slope * y + intercept
-        coeffs = np.polyfit(ys, xs, 1)
-        slope, intercept = coeffs
-
-        # Generate prediction points from impact to stump line (y=0.92 in normalised)
+    
+        # Try quadratic fit first
+        if len(recent) >= 5:
+            try:
+                coeffs = np.polyfit(ys, xs, 2)  # quadratic
+            except (np.linalg.LinAlgError, ValueError):
+                coeffs = np.polyfit(ys, xs, 1)  # fallback linear
+        else:
+            coeffs = np.polyfit(ys, xs, 1)
+    
+        # Generate prediction from last point to stump line
         last_point = points[-1]
-        start_y_norm = last_point.y
-        end_y_norm = 0.92  # batting crease in normalised coords
-
-        if end_y_norm <= start_y_norm:
+        start_y = last_point.y
+        end_y = 0.95  # stump line in normalized coords
+    
+        if end_y <= start_y:
             return []
-
-        n_steps = 15
+    
+        n_steps = 20
         prediction = []
         for i in range(1, n_steps + 1):
             t = i / n_steps
-            y_norm = start_y_norm + t * (end_y_norm - start_y_norm)
-            x_norm = slope * y_norm * h + intercept
-            x_norm = x_norm / w  # normalise to 0-1
-
-            # Clamp
-            x_norm = max(0.0, min(1.0, x_norm))
+            y_norm = start_y + t * (end_y - start_y)
+            x_norm = float(np.polyval(coeffs, y_norm))
+    
+            # Clamp to valid range
+            x_norm = max(0.05, min(0.95, x_norm))
             y_norm = max(0.0, min(1.0, y_norm))
-
+    
             prediction.append({
-                "x": round(float(x_norm), 4),
-                "y": round(float(y_norm), 4),
+                "x": round(x_norm, 4),
+                "y": round(y_norm, 4),
                 "z": 0.0,
             })
-
+    
         return prediction
 
     # ------------------------------------------------------------------
@@ -778,6 +729,7 @@ class VideoProcessor:
         trajectory_result: TrajectoryPrediction,
         per_frame_data: List[Dict[str, Any]],
         impact_idx: Optional[int] = None,
+        frame_skip: int = 2,
     ) -> dict:
         """Convert trajectory data into the format expected by
         :class:`DecisionEngine`."""
@@ -800,37 +752,37 @@ class VideoProcessor:
         if trajectory_result.predicted_path:
             data["predicted_path"] = trajectory_result.predicted_path
 
-        # Detect pad impact: if the ball trajectory shows sudden change
-        # near the end (batting crease zone), mark as pad impact
+        # Detect pad impact more reliably
         data["hit_pad"] = False
         data["no_ball"] = False
-
-        # Use velocity drop as impact indicator
-        if len(per_frame_data) >= 10:
-            last_20 = per_frame_data[-20:]
-            ball_frames = [f for f in last_20 if f["ball_detected"]]
+    
+        if len(per_frame_data) >= 8:
+            # Get all frames after release
+            post_release_frames = per_frame_data[max(0, impact_idx * frame_skip):] if impact_idx else per_frame_data
+            ball_frames = [f for f in post_release_frames if f["ball_detected"]]
+        
             if len(ball_frames) >= 5:
-                # Check if ball disappears or slows down near the end
-                last_five = ball_frames[-5:]
-                first_five = ball_frames[:5]
-                last_avg_speed = 0
-                first_avg_speed = 0
-                for i in range(1, len(last_five)):
-                    dx = last_five[i]["ball_position"]["x"] - last_five[i-1]["ball_position"]["x"]
-                    dy = last_five[i]["ball_position"]["y"] - last_five[i-1]["ball_position"]["y"]
-                    last_avg_speed += np.sqrt(dx*dx + dy*dy)
-                for i in range(1, len(first_five)):
-                    dx = first_five[i]["ball_position"]["x"] - first_five[i-1]["ball_position"]["x"]
-                    dy = first_five[i]["ball_position"]["y"] - first_five[i-1]["ball_position"]["y"]
-                    first_avg_speed += np.sqrt(dx*dx + dy*dy)
-
-                if first_avg_speed > 0 and last_avg_speed / first_avg_speed < 0.4:
-                    data["hit_pad"] = True
-                    data["predicted_stump_hit"] = trajectory_result.predicted_stump_hit
-
-            # Also check deviation as a secondary signal
-            if abs(trajectory_result.deviation_degrees) > 3.0 and not data["hit_pad"]:
-                data["hit_pad"] = True
+                # Check if ball speed drops significantly in last 30% of trajectory
+                # (indicating impact with pad/body)
+                cutoff = max(1, len(ball_frames) * 7 // 10)
+                early = ball_frames[:cutoff]
+                late = ball_frames[cutoff:]
+        
+                if len(early) >= 2 and len(late) >= 2:
+                    early_speed = 0
+                    late_speed = 0
+                    for i in range(1, len(early)):
+                        dx = early[i]["ball_position"]["x"] - early[i-1]["ball_position"]["x"]
+                        dy = early[i]["ball_position"]["y"] - early[i-1]["ball_position"]["y"]
+                        early_speed += np.sqrt(dx*dx + dy*dy)
+                    for i in range(1, len(late)):
+                        dx = late[i]["ball_position"]["x"] - late[i-1]["ball_position"]["x"]
+                        dy = late[i]["ball_position"]["y"] - late[i-1]["ball_position"]["y"]
+                        late_speed += np.sqrt(dx*dx + dy*dy)
+        
+                    if early_speed > 0 and late_speed / max(early_speed, 1) < 0.35:
+                        data["hit_pad"] = True
+                        data["predicted_stump_hit"] = trajectory_result.predicted_stump_hit
 
         if trajectory_result.bounce_points:
             last_bounce = trajectory_result.bounce_points[-1]
