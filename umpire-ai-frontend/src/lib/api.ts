@@ -13,7 +13,7 @@ export const api = {
   // ─── Upload video ────────────────────────────────────────
   async uploadVideo(file: File): Promise<UploadResponse> {
     const formData = new FormData();
-    formData.append('video', file);
+    formData.append('file', file);
     const res = await fetch(`${API_BASE}/api/upload`, {
       method: 'POST',
       body: formData,
@@ -83,7 +83,7 @@ export const api = {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const formData = new FormData();
-      formData.append('video', file);
+      formData.append('file', file);
       formData.append('ball_type', ballType);
 
       xhr.upload.addEventListener('progress', (e) => {
@@ -100,13 +100,22 @@ export const api = {
             reject(new Error('Invalid response from server'));
           }
         } else {
-          reject(new Error(`Upload & analyze failed: ${xhr.status}`));
+          let detail = '';
+          try {
+            const body = JSON.parse(xhr.responseText);
+            detail = body.detail ? (Array.isArray(body.detail) ? body.detail.map((d: any) => d.msg).join(', ') : body.detail) : xhr.responseText;
+          } catch {
+            detail = xhr.responseText || 'Unknown error';
+          }
+          reject(new Error(`Upload failed (${xhr.status}): ${detail}`));
         }
       });
 
-      xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+      xhr.addEventListener('error', () => reject(new Error('Network error during upload — check your connection or try again (server may be waking up)')));
       xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
+      xhr.addEventListener('timeout', () => reject(new Error('Upload timed out — the server may be starting up. Please try again in 30 seconds.')));
 
+      xhr.timeout = 300000; // 5 min timeout for cold starts + large files
       xhr.open('POST', `${API_BASE}/api/upload-and-analyze`);
       xhr.send(formData);
     });
