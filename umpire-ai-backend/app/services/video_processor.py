@@ -382,32 +382,40 @@ class VideoProcessor:
     def _detect_release_frame(
         detections: List[Dict[str, Any]],
         frame_height: int,
-        min_detections: int = 6,
+        min_detections: int = 4,
     ) -> Optional[int]:
         """Detect the frame where the ball is fully airborne from bowler's hand.
 
-        Strategy (v4 — robust for umpire-camera footage):
-        1. Compute per-frame velocity and vertical direction (dy between frames).
-        2. During the run-up the ball is in the bowler's hand — it moves
-           WITH the bowler (mostly horizontal, relatively slow, in the
-           lower-mid portion of the frame, often large radius due to
-           the camera being close to the bowler).
-        3. At the moment of release the ball becomes a separate fast-moving
-           projectile.  In the umpire's camera view this appears as:
-           - Ball suddenly appearing in the UPPER portion of the frame
-             (the bowler's release point is above stump height)
-           - A sharp CHANGE in the ball's apparent size (radius drops as
-             it moves away from the camera)
-           - A spike in velocity (the ball accelerates away)
-           - The ball begins moving consistently DOWNWARD on screen
-             (from bowler toward batsman — the pitch slopes away)
-        4. We scan from the start and find the first frame that satisfies
-           ALL of:
-           a) y < frame_height * 0.45  (upper half — above bowler's torso)
-           b) velocity > a generous threshold
-           c) consistent detection begins (no gaps after)
-        5. We then look backwards a few frames to find the very FIRST
-           detection in that "airborne cluster" — that is the release frame.
+        Strategy (v5 — inspired by Hawk-Eye release detection):
+
+        Hawk-Eye tracks from the moment the ball is **fully visible as a
+        separate object in the air** after leaving the bowler's hand.
+        The key insight is that the ball, once released, exhibits a set of
+        characteristics that clearly distinguish it from the run-up phase:
+
+        During the run-up:
+          - Ball is in the bowler's hand (occluded by body, or detected
+            as part of the bowler — large radius, low confidence)
+          - Ball position follows the bowler's body movement
+          - Velocity is moderate (bowler running speed, not ball speed)
+          - Ball is typically in the LOWER portion of the frame (close to
+            the camera)
+
+        After release:
+          - Ball is a small, round, fast-moving projectile
+          - Ball radius is CONSISTENT and SMALL (3-15px typical from umpire cam)
+          - Ball moves rapidly in one direction (down the pitch)
+          - Ball appears in the UPPER-MIDDLE portion of the frame (above
+            bowler's head, which is the release point)
+          - Detections become CONSISTENT (every frame or nearly so)
+
+        We use three independent signals and require at least 2 of 3:
+          1. **Size signal**: Ball radius drops to <= median (airborne = smaller)
+          2. **Position signal**: Ball y < 55% of frame height (upper portion)
+          3. **Velocity signal**: Ball speed > median (airborne = faster than run-up)
+
+        When 2+ signals agree for N consecutive frames, that cluster starts
+        at the release frame.
 
         Returns index into the detections list, or None if indeterminate.
         """
@@ -416,8 +424,8 @@ class VideoProcessor:
 
         n = len(detections)
 
-        # --- Step 1: compute per-detection velocity and radius ---
-        velocities = [0.0]  # no velocity for first detection
+        # --- Compute per-frame velocity ---
+        velocities = [0.0]
         for i in range(1, n):
             dx = detections[i]["x"] - detections[i - 1]["x"]
             dy = detections[i]["y"] - detections[i - 1]["y"]
@@ -425,103 +433,79 @@ class VideoProcessor:
             speed = float(np.sqrt(dx * dx + dy * dy)) / dt
             velocities.append(speed)
 
-        # Smooth velocities with a short window
+        # Smooth velocities
         win = min(5, max(3, n // 4))
-        kernel = np.ones(win) / win
-        smoothed = np.convolve(velocities, kernel, mode="same").tolist()
+        smoothed_vel = np.convolve(velocities, np.ones(win) / win, mode="same").tolist()
 
-        # Compute jerk
-        jerks = [0.0]
-        for i in range(1, len(smoothed)):
-            jerks.append(abs(smoothed[i] - smoothed[i - 1]))
-
-        # --- Step 2: compute radius trend ---
+        # --- Compute radius statistics ---
         radii = [d["radius"] for d in detections]
-        # Running average radius
-        rad_win = min(5, max(3, n // 4))
-        rad_smooth = np.convolve(radii, np.ones(rad_win) / rad_win, mode="same").tolist()
+        median_rad = float(np.median(radii))
 
-        # --- Step 3: find "airborne" start ---
-        # The ball, once released, moves AWAY from the umpire camera.
-        # In the camera image this means:
-        #   - y INCREASES (ball moves from top toward bottom of frame
-        #     as it travels down the pitch)
-        #   - radius DECREASES or stays small (ball getting farther)
-        #   - velocity is HIGH (ball is fast)
-
-        # Adaptive thresholds from the data itself
+        # --- Compute velocity statistics (exclude first frame) ---
         vel_arr = np.array(velocities[1:], dtype=np.float64)
         median_vel = float(np.median(vel_arr)) if len(vel_arr) > 0 else 100.0
-        p75_vel = float(np.percentile(vel_arr, 75)) if len(vel_arr) > 4 else median_vel * 1.5
-        median_rad = float(np.median(radii)) if radii else 10.0
 
-        # Velocity threshold: the ball must be moving at least as fast
-        # as the 60th percentile — but at least 30 px/s absolute
-        vel_threshold = max(float(np.percentile(vel_arr, 60)) if len(vel_arr) > 4 else median_vel * 1.2, 30.0)
+        # --- Score each frame with 3 independent signals ---
+        # Each signal is True (1) or False (0)
+        # Release requires at least 2 of 3 signals = True for consecutive frames
+        scores = []
+        for i in range(n):
+            d = detections[i]
+            r = d["radius"]
+            y = d["y"]
+            v = smoothed_vel[i] if i < len(smoothed_vel) else 0
 
-        # Upper-zone threshold: the ball must be above the midline
-        upper_y = frame_height * 0.45
+            # Signal 1: SMALL SIZE — ball is at-or-below median radius
+            # (airborne ball is typically smaller than run-up ball-in-hand)
+            sig_small = 1 if r <= median_rad * 1.05 else 0
 
-        # Scan forward to find the first "airborne cluster"
-        airborne_start = None
+            # Signal 2: UPPER POSITION — ball is in upper 55% of frame
+            # (release point is above bowler's torso in umpire camera)
+            sig_high = 1 if y < frame_height * 0.55 else 0
+
+            # Signal 3: FAST MOVEMENT — ball speed above median
+            # (airborne ball moves faster than bowler's running speed)
+            sig_fast = 1 if v > median_vel * 0.6 else 0
+
+            scores.append((sig_small + sig_high + sig_fast, sig_small, sig_high, sig_fast))
+
+        # --- Find first cluster with score >= 2 for N consecutive frames ---
+        required_consecutive = max(2, min(4, n // 5))
         consecutive = 0
-        required = max(2, min(4, n // 5))  # need 2-4 consecutive frames
 
         for i in range(n):
-            det = detections[i]
-            v = smoothed[i]
-            j = jerks[i]
-            y = det["y"]
-            r = rad_smooth[i]
-
-            # Conditions for "ball is in the air, released"
-            in_upper_zone = y < upper_y
-            is_moving_fast = v > vel_threshold
-            # Ball should not be extremely large (that means it's close
-            # to camera, i.e. still in bowler's hand)
-            not_in_hand = r < median_rad * 1.8
-
-            if in_upper_zone and is_moving_fast and not_in_hand:
+            total, s_small, s_high, s_fast = scores[i]
+            if total >= 2:
                 consecutive += 1
-                if consecutive >= required:
-                    # This is a sustained airborne cluster
-                    airborne_start = i - consecutive + 1
-                    break
+                if consecutive >= required_consecutive:
+                    # Found the start of the airborne cluster
+                    cluster_start = i - consecutive + 1
+                    # Walk backward to include any preceding frames that
+                    # also look airborne (score >= 1 means at least one signal)
+                    while cluster_start > 0 and scores[cluster_start - 1][0] >= 1:
+                        cluster_start -= 1
+                    return cluster_start
             else:
                 consecutive = 0
 
-        # --- Step 4: if no clear upper-zone cluster, use jerk spike ---
-        if airborne_start is None:
-            # Find the biggest velocity/jerk spike (release moment)
-            # Look in the first 60% of detections
-            search_end = max(n // 2, 10)
-            best_score = 0
-            best_idx = None
-            for i in range(2, min(search_end, n)):
-                score = smoothed[i] * 0.5 + (jerks[i] if i < len(jerks) else 0) * 0.5
-                if score > best_score:
-                    best_score = score
-                    best_idx = i
+        # --- FALLBACK 1: Highest point detection ---
+        # The ball reaches its highest point (lowest y on screen) near release
+        # Search in the first 60% of detections
+        search_limit = max(n * 3 // 5, 8)
+        min_y = frame_height
+        min_y_idx = 0
+        for i in range(min(search_limit, n)):
+            if detections[i]["y"] < min_y:
+                min_y = detections[i]["y"]
+                min_y_idx = i
 
-            if best_idx is not None and best_score > median_vel * 0.8:
-                # Walk backward from the spike to find the first frame
-                # of this fast cluster
-                for j in range(best_idx, -1, -1):
-                    if smoothed[j] < vel_threshold * 0.5:
-                        airborne_start = j + 1
-                        break
-                else:
-                    airborne_start = 0
-            else:
-                # Final fallback: use the first frame where ball is
-                # in upper 40% of frame and moving faster than median
-                for i in range(n):
-                    det = detections[i]
-                    if det["y"] < frame_height * 0.4 and velocities[i] > median_vel:
-                        airborne_start = i
-                        break
-
-        return airborne_start
+        # Release is 1-2 frames before the highest point
+        candidate = max(0, min_y_idx - 2)
+        logger.info(
+            "Release detection: using highest-point fallback (idx=%d, y=%d)",
+            candidate, min_y
+        )
+        return candidate
 
     # ------------------------------------------------------------------
     # Impact detection
