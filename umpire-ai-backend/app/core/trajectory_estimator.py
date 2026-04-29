@@ -1,19 +1,18 @@
 """
-Trajectory estimation with Unscented Kalman Filter + physics model — v2.
+Trajectory estimation with Kalman Filter smoothing — v3.
 
-Replaces the linear Kalman filter with an **Unscented Kalman Filter (UKF)**
-that properly handles the **nonlinear dynamics** of cricket ball trajectory,
-including:
+**v3 changes** (2-D single-camera optimisation):
+    - Default filter changed from UKF to **linear KF**.  The UKF's
+      3-D physics model (gravity, drag, Magnus, bounce) is counterproductive
+      when only 2-D pixel data is available — there is no depth information
+      to feed the z-axis dynamics.
+    - Added **post-KF moving-average smoothing** (Savitzky-Golay-like) to
+      remove jitter while preserving the trajectory shape.
+    - Improved stump-hit prediction: uses last 60 % of points, validates
+      quadratic coefficients, and guards against unreliable predictions.
 
-    - Gravity (constant downward acceleration: 9.81 m/s^2)
-    - Air drag (velocity-dependent: F_drag ~ v^2)
-    - Magnus effect (spin-induced lateral force for swing/seam)
-    - Bounce model (coefficient of restitution + friction on pitch)
-    - Pitch event detection (sudden vertical velocity reversal)
-
-The UKF uses the **sigma-point (unscented) transform** to propagate mean
-and covariance through the nonlinear dynamics — unlike the linear KF which
-assumes constant velocity and cannot model bounces.
+The UKF remains available via ``use_ukf=True`` for multi-camera setups
+where real 3-D data exists.
 
 When ``filterpy`` is not installed, falls back to the linear KF from v1.
 """
@@ -391,16 +390,22 @@ class KalmanFilter2D:
 class TrajectoryEstimator:
     """Estimates and predicts ball trajectory using the best available filter.
 
-    Automatically selects UKF (physics-based, nonlinear) when possible,
-    falling back to linear KF.
+    Defaults to the **linear KF** because the UKF's 3-D physics model is
+    counterproductive with single-camera 2-D pixel data (no depth).  The
+    linear KF plus a post-smoothing pass gives more reliable results.
+    The UKF path can still be activated via ``use_ukf=True``.
     """
 
-    def __init__(self, dt: float = 1.0 / 30.0, use_ukf: bool = True):
+    def __init__(self, dt: float = 1.0 / 30.0, use_ukf: bool = False):
         """Initialise trajectory estimator.
 
         Args:
             dt: Time step between frames (seconds).
-            use_ukf: Whether to use UKF. Falls back to linear KF if False.
+            use_ukf: Whether to use UKF.  Defaults to *False* because the
+                nonlinear 3-D physics model is counterproductive when we
+                only have 2-D pixel data (no depth information).  The linear
+                KF + post-smoothing gives better results for single-camera
+                footage.
         """
         self.dt = dt
         self.use_ukf = use_ukf
@@ -488,7 +493,9 @@ class TrajectoryEstimator:
     # ------------------------------------------------------------------
 
     def _smooth_trajectory(self) -> List[Tuple[float, float, float, float]]:
-        """Apply filter-based smoothing to raw points."""
+        """Apply filter-based smoothing followed by a Savitzky-Golay-like
+        moving-average pass to remove residual jitter while preserving the
+        overall trajectory shape."""
         if self._filter_type == "ukf":
             ukf = CricketBallUKF(dt=self.dt)
             smoothed = []
@@ -496,8 +503,7 @@ class TrajectoryEstimator:
                 ukf.predict()
                 ukf.update(np.array([x, y, 0.0], dtype=np.float64))
                 state = ukf.get_state()
-                smoothed.append((float(state[0]), float(state[1]), frame, ts))
-            return smoothed
+                smoothed.append([float(state[0]), float(state[1]), frame, ts])
         else:
             kf = KalmanFilter2D()
             smoothed = []
@@ -505,8 +511,26 @@ class TrajectoryEstimator:
                 kf.predict()
                 kf.update(np.array([x, y], dtype=np.float64))
                 state = kf.get_state()
-                smoothed.append((float(state[0]), float(state[1]), frame, ts))
-            return smoothed
+                smoothed.append([float(state[0]), float(state[1]), frame, ts])
+
+        # --- Post-KF moving-average smoothing (Savitzky-Golay-like) ---
+        # Window = min(5, len(points) // 3).  A window of 1 would be a
+        # no-op, so we only apply when the window is >= 3.
+        n_pts = len(smoothed)
+        if n_pts >= 6:
+            win = min(5, max(3, n_pts // 3))
+            half = win // 2
+            for axis in (0, 1):  # x then y
+                values = [p[axis] for p in smoothed]
+                ma: List[float] = []
+                for i in range(n_pts):
+                    lo = max(0, i - half)
+                    hi = min(n_pts, i + half + 1)
+                    ma.append(float(np.mean(values[lo:hi])))
+                for i in range(n_pts):
+                    smoothed[i][axis] = ma[i]
+
+        return [(s[0], s[1], s[2], s[3]) for s in smoothed]
 
     def _detect_pitch_point(
         self, points: List[TrajectoryPoint]
@@ -638,16 +662,29 @@ class TrajectoryEstimator:
     def _predict_stump_hit(self, points: List[TrajectoryPoint]) -> bool:
         """Extrapolate trajectory to stump line and check if it hits.
 
-        Uses the post-pitch trajectory for quadratic regression
-        extrapolation, which accounts for swing/curve of the ball.
-        Falls back to linear regression with more data points.
+        Improvements over the original implementation:
+        * Uses the LAST 60 % of points (more data for a better fit).
+        * When using a quadratic fit, the coefficient is sanity-checked
+          (|a| < 0.5); otherwise falls back to linear.
+        * If the impact-point y < 0.5 the ball hasn't reached the batsman
+          and the prediction is unreliable — returns False.
         """
         if len(points) < 5:
             return False
 
-        # Use last N points after any detected pitch point
-        # (at least 3 points, up to all available)
-        recent = points[-min(max(len(points) // 2, 5), len(points)):]
+        # --- Unreliable prediction guard ---
+        # If the last detected point hasn't reached half-way down the frame
+        # the ball likely hasn't travelled far enough for a valid prediction.
+        if points[-1].y < 0.5:
+            logger.debug(
+                "Stump-hit prediction unreliable: last point y=%.3f < 0.5",
+                points[-1].y,
+            )
+            return False
+
+        # Use last 60 % of points for a richer fit
+        n_recent = max(5, int(len(points) * 0.6))
+        recent = points[-min(n_recent, len(points)):]
 
         ys = np.array([p.y for p in recent])
         xs = np.array([p.x for p in recent])
@@ -658,22 +695,30 @@ class TrajectoryEstimator:
         # Stump line at y = 0.95 (batsman end in normalised coords)
         stump_y = 0.95
 
-        # Try quadratic fit if we have enough points (accounts for swing)
+        # Try quadratic fit if enough points AND curvature is reasonable
+        use_quad = False
         if len(recent) >= 8:
             try:
                 coeffs = np.polyfit(ys, xs, 2)
-                predicted_x = float(np.polyval(coeffs, stump_y))
+                if abs(coeffs[0]) < 0.5:  # reasonable quadratic coefficient
+                    predicted_x = float(np.polyval(coeffs, stump_y))
+                    use_quad = True
             except (np.linalg.LinAlgError, ValueError):
-                # Fallback to linear
-                slope, intercept = np.polyfit(ys, xs, 1)
-                predicted_x = slope * stump_y + intercept
-        else:
+                pass
+
+        if not use_quad:
             # Linear regression: x = slope * y + intercept
             slope, intercept = np.polyfit(ys, xs, 1)
-            predicted_x = slope * stump_y + intercept
+            predicted_x = float(slope * stump_y + intercept)
 
         # Stump zone: ICC stumps are 9 inches (22.86cm) wide on a
         # 10 feet (305cm) pitch → roughly 7.5% of pitch width
         # We use 12% to give more margin for real-world measurement error
         stump_half_width = 0.12
-        return abs(predicted_x - 0.5) < stump_half_width
+        hit = abs(predicted_x - 0.5) < stump_half_width
+
+        logger.debug(
+            "Stump-hit prediction: predicted_x=%.3f, use_quad=%s, hit=%s",
+            predicted_x, use_quad, hit,
+        )
+        return hit

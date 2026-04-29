@@ -15,19 +15,21 @@ interface PitchPathVideoProps {
  *
  * Faithfully recreates the broadcast overlay used in international cricket:
  *
- *   - Camera positioned ELEVATED 32° from behind/above bowler's end,
- *     12° azimuth offset — the classic Hawk-Eye isometric view.
- *   - Pitch rendered as natural BROWN/TAN surface (#B8A060) with subtle
- *     mowed grass stripe texture — NOT green (real cricket pitch colour).
- *   - Dark green-black broadcast background (#0a1a0a → #1a2e1a).
- *   - Tracked ball path: SOLID bright orange-yellow (#FBBF24) with bloom/glow.
- *   - Predicted path (hitting): DASHED RED (#FF0000) with glow.
- *   - Predicted path (missing): DASHED BLUE (#3B82F6) with glow.
+ *   - Camera positioned ELEVATED 28° from behind/above bowler's end,
+ *     10° azimuth offset — the classic Hawk-Eye isometric view.
+ *   - Pitch rendered as DARK OLIVE-GREEN surface (#2D5016) matching
+ *     real DRS broadcast footage.
+ *   - Outfield: Lighter green (#4A8C2A) surrounding the pitch strip.
+ *   - Dark green-black broadcast background with slight green tint.
+ *   - Tracked ball path: SOLID RED (#FF0000) with 3D tube shading.
+ *   - Predicted path: SOLID BLUE (#0066FF) — NOT dashed.
  *   - Ball: Red cricket ball (#CC0000) with white specular highlight.
- *   - Stumps: Off-white/cream at BROADCAST SCALE (~15-20% frame height).
- *   - Stumps glow RED/ORANGE when ball is predicted to hit.
- *   - "HAWK-EYE" watermark bottom-left, ball speed top-right.
- *   - Full 6-second animation sequence matching broadcast pacing.
+ *   - Ball shadow: Dark semi-transparent ellipse projected on pitch surface.
+ *   - Stumps: White/cream at broadcast scale, glow RED/ORANGE when hitting.
+ *   - LBW criteria labels appear progressively during animation.
+ *   - "HAWK-EYE" watermark bottom-left corner.
+ *   - Ball speed top-right in km/h.
+ *   - Full 5-second animation sequence matching broadcast pacing.
  */
 
 // ═══════════════════════════════════════════════════════════
@@ -40,31 +42,33 @@ const STUMP_SPREAD = 0.75;     // half-width between off & leg stump (9")
 const STUMP_THICKNESS = 0.18;  // visual stump width (slightly thicker for broadcast)
 const BAIL_LENGTH = 0.5;       // bail extends past stump tops
 const POPPING_CREASE_DIST = 4; // 4 feet in front of bowling crease
+const OUTFIELD_MARGIN = 18;    // extra feet of outfield on each side
 
 // ═══════════════════════════════════════════════════════════
 // CAMERA CONSTANTS — Hawk-Eye broadcast angles
 // ═══════════════════════════════════════════════════════════
-const CAM_ELEVATION = 32;      // degrees above horizontal
-const CAM_AZIMUTH = 12;        // degrees from center axis (slight offset)
+const CAM_ELEVATION = 28;      // degrees above horizontal
+const CAM_AZIMUTH = 10;        // degrees from center axis (slight offset)
 const CAM_DISTANCE = 85;       // distance from pitch centre (feet)
-const CAM_HEIGHT_FEET = 35;    // ~10.7m above ground (broadcast crane)
+const CAM_HEIGHT_FEET = 32;    // ~9.8m above ground (broadcast crane)
 
 // ═══════════════════════════════════════════════════════════
 // PROJECTION
 // ═══════════════════════════════════════════════════════════
 const FOCAL_LENGTH = 450;      // focal length in pixels (broadcast telephoto look)
 
-// Animation timing (at 1x speed, total ~6 seconds)
-const ANIM_DURATION_MS = 6000;
+// Animation timing (at 1x speed, total ~5 seconds)
+const ANIM_DURATION_MS = 5000;
 // Phase boundaries (progress 0-1)
-const PHASE_SETUP = 0.05;        // 0-0.05: pitch fades in
-const PHASE_RELEASE = 0.12;      // 0.05-0.12: release point appears
-const PHASE_FLIGHT = 0.50;       // 0.12-0.50: ball in flight, tracked path
-const PHASE_PITCH_BOUNCE = 0.55; // 0.50-0.55: pitch bounce marker
-const PHASE_TO_IMPACT = 0.70;    // 0.55-0.70: post-pitch to impact
-const PHASE_PREDICTED = 0.88;    // 0.70-0.88: predicted path reveal
-const PHASE_STUMPS = 0.95;       // 0.88-0.95: stumps decision glow
-const PHASE_SUMMARY = 1.0;       // 0.95-1.0: full summary with labels
+const PHASE_SETUP = 0.10;        // 0-0.10: scene setup, pitch/creases/stumps fade in
+const PHASE_RELEASE = 0.14;      // 0.10-0.14: release point appears
+const PHASE_FLIGHT = 0.44;       // 0.14-0.44: ball in flight, tracked path draws
+const PHASE_BOUNCE = 0.52;       // 0.44-0.52: bounce point marker appears
+const PHASE_TO_IMPACT = 0.60;    // 0.52-0.60: post-bounce to impact on pad
+const PHASE_IMPACT = 0.62;       // 0.60-0.62: impact label appears
+const PHASE_PREDICTED = 0.82;    // 0.62-0.82: predicted blue path extends
+const PHASE_DECISION = 0.90;     // 0.82-0.90: HITTING/MISSING text
+const PHASE_OVERLAY = 1.0;       // 0.90-1.00: final OUT/NOT OUT overlay
 
 /** Convert feet to world 3D coordinates relative to pitch centre. */
 function worldFromPitch(
@@ -172,7 +176,7 @@ function drawStumpSet(
   const ground = 0;
   const top = STUMP_HEIGHT;
 
-  // Stump colour — cream when neutral, red when highlighted
+  // Stump colour — cream when neutral, red-orange when highlighted
   const stumpColor = highlight ? "#FF4400" : color;
   const stumpAlpha = highlight ? 1.0 : alpha;
 
@@ -273,7 +277,82 @@ function drawStumpSet(
   }
 }
 
-/** Draw the pitch surface as a filled perspective quad — BROWN/TAN. */
+/** Draw the outfield as a larger perspective quad — LIGHTER GREEN. */
+function drawOutfieldSurface(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number, flip: number,
+  cw: number, ch: number,
+  fadeAlpha: number = 1.0,
+) {
+  const ohw = PITCH_WIDTH / 2 + OUTFIELD_MARGIN;
+  const oLen = PITCH_LENGTH + OUTFIELD_MARGIN * 1.5;
+  const oStart = -OUTFIELD_MARGIN * 0.75;
+  const corners3D = [
+    worldFromPitch(-ohw, oStart, 0),
+    worldFromPitch(ohw, oStart, 0),
+    worldFromPitch(ohw, oStart + oLen, 0),
+    worldFromPitch(-ohw, oStart + oLen, 0),
+  ];
+
+  const corners = corners3D.map(c =>
+    project(c.x, c.y, c.z, cx, cy, flip, cw, ch)
+  );
+
+  if (!corners.every(Boolean)) return;
+  const pts = corners.filter(Boolean) as { x: number; y: number; scale: number }[];
+
+  ctx.save();
+  ctx.globalAlpha = fadeAlpha;
+
+  // ─── Outfield fill — lighter green (#4A8C2A) ───
+  const outfieldGrad = ctx.createLinearGradient(cx, pts[0].y, cx, pts[3].y);
+  outfieldGrad.addColorStop(0, "#3D7A24");
+  outfieldGrad.addColorStop(0.15, "#4A8C2A");
+  outfieldGrad.addColorStop(0.50, "#458828");
+  outfieldGrad.addColorStop(0.85, "#4A8C2A");
+  outfieldGrad.addColorStop(1, "#3D7A24");
+
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < 4; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.closePath();
+  ctx.fillStyle = outfieldGrad;
+  ctx.fill();
+
+  // Subtle mowed grass stripes on outfield
+  const stripeCount = 30;
+  for (let i = 0; i < stripeCount; i++) {
+    const y1 = oStart + (i / stripeCount) * oLen;
+    const y2 = oStart + ((i + 1) / stripeCount) * oLen;
+
+    const s1L = worldFromPitch(-ohw, y1, 0);
+    const s1R = worldFromPitch(ohw, y1, 0);
+    const s2L = worldFromPitch(-ohw, y2, 0);
+    const s2R = worldFromPitch(ohw, y2, 0);
+
+    const p1L = project(s1L.x, s1L.y, s1L.z, cx, cy, flip, cw, ch);
+    const p1R = project(s1R.x, s1R.y, s1R.z, cx, cy, flip, cw, ch);
+    const p2L = project(s2L.x, s2L.y, s2L.z, cx, cy, flip, cw, ch);
+    const p2R = project(s2R.x, s2R.y, s2R.z, cx, cy, flip, cw, ch);
+
+    if (p1L && p1R && p2L && p2R) {
+      ctx.fillStyle = i % 2 === 0
+        ? "rgba(0, 0, 0, 0.04)"
+        : "rgba(255, 255, 255, 0.02)";
+      ctx.beginPath();
+      ctx.moveTo(p1L.x, p1L.y);
+      ctx.lineTo(p1R.x, p1R.y);
+      ctx.lineTo(p2R.x, p2R.y);
+      ctx.lineTo(p2L.x, p2L.y);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
+}
+
+/** Draw the pitch surface as a filled perspective quad — DARK OLIVE-GREEN. */
 function drawPitchSurface(
   ctx: CanvasRenderingContext2D,
   cx: number, cy: number, flip: number,
@@ -298,15 +377,15 @@ function drawPitchSurface(
   ctx.save();
   ctx.globalAlpha = fadeAlpha;
 
-  // ─── Pitch fill — BROWN/TAN (real cricket pitch colour) ───
+  // ─── Pitch fill — DARK OLIVE-GREEN (#2D5016) ───
   const pitchGrad = ctx.createLinearGradient(cx, pts[0].y, cx, pts[3].y);
-  pitchGrad.addColorStop(0, "#C8B070");
-  pitchGrad.addColorStop(0.12, "#B8A060");
-  pitchGrad.addColorStop(0.30, "#BDA868");
-  pitchGrad.addColorStop(0.50, "#B8A060");
-  pitchGrad.addColorStop(0.70, "#BDA868");
-  pitchGrad.addColorStop(0.88, "#B8A060");
-  pitchGrad.addColorStop(1, "#C8B070");
+  pitchGrad.addColorStop(0, "#345C1B");
+  pitchGrad.addColorStop(0.10, "#2D5016");
+  pitchGrad.addColorStop(0.25, "#31551A");
+  pitchGrad.addColorStop(0.50, "#2D5016");
+  pitchGrad.addColorStop(0.75, "#31551A");
+  pitchGrad.addColorStop(0.90, "#2D5016");
+  pitchGrad.addColorStop(1, "#345C1B");
 
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
@@ -315,7 +394,7 @@ function drawPitchSurface(
   ctx.fillStyle = pitchGrad;
   ctx.fill();
 
-  // ─── Subtle mowed grass stripes (alternating lighter/darker strips) ───
+  // ─── Subtle mowed grass stripes on pitch (alternating lighter/darker strips) ───
   const stripeCount = 20;
   for (let i = 0; i < stripeCount; i++) {
     const y1 = (i / stripeCount) * PITCH_LENGTH;
@@ -332,10 +411,10 @@ function drawPitchSurface(
     const p2R = project(s2R.x, s2R.y, s2R.z, cx, cy, flip, cw, ch);
 
     if (p1L && p1R && p2L && p2R) {
-      // Alternating subtle dark/light stripes on the brown surface
+      // Alternating subtle dark/light stripes on the green surface
       ctx.fillStyle = i % 2 === 0
-        ? "rgba(0, 0, 0, 0.035)"
-        : "rgba(255, 255, 255, 0.025)";
+        ? "rgba(0, 0, 0, 0.06)"
+        : "rgba(255, 255, 255, 0.03)";
       ctx.beginPath();
       ctx.moveTo(p1L.x, p1L.y);
       ctx.lineTo(p1R.x, p1R.y);
@@ -346,8 +425,8 @@ function drawPitchSurface(
     }
   }
 
-  // ─── Pitch outline ───
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+  // ─── Pitch outline — thin white line ───
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
@@ -416,6 +495,128 @@ function drawCricketBall(
   ctx.fill();
 }
 
+/**
+ * Draw a ball shadow on the pitch surface.
+ * Projects the ball's world position down to z=0 and draws a dark ellipse.
+ */
+function drawBallShadow(
+  ctx: CanvasRenderingContext2D,
+  ballWorldX: number,  // lateral pitch coordinate
+  ballWorldY: number,  // along-pitch coordinate
+  ballWorldZ: number,  // height above ground
+  cx: number, cy: number, flip: number,
+  cw: number, ch: number,
+) {
+  // Project shadow position (z=0) and ball position to get offset
+  const shadowWorld = worldFromPitch(ballWorldX, ballWorldY, 0);
+  const shadowScreen = project(shadowWorld.x, shadowWorld.y, shadowWorld.z, cx, cy, flip, cw, ch);
+  if (!shadowScreen) return;
+
+  // Shadow size scales with height — higher ball = larger, more diffuse shadow
+  const baseRadius = Math.max(3, 8 * shadowScreen.scale);
+  const heightFactor = Math.min(2.5, 1 + ballWorldZ * 0.25);
+  const shadowRadiusX = baseRadius * heightFactor;
+  const shadowRadiusY = baseRadius * heightFactor * 0.45; // perspective squash
+
+  // Shadow opacity decreases with height
+  const shadowAlpha = Math.max(0.08, 0.4 - ballWorldZ * 0.04);
+
+  ctx.save();
+  ctx.globalAlpha = shadowAlpha;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+  ctx.beginPath();
+  ctx.ellipse(
+    shadowScreen.x, shadowScreen.y,
+    shadowRadiusX, shadowRadiusY,
+    0, 0, Math.PI * 2
+  );
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * Draw a 3D tube-shaded path line with depth illusion.
+ * Uses multiple layered strokes of decreasing width and increasing brightness.
+ */
+function drawTubePath(
+  ctx: CanvasRenderingContext2D,
+  points: { x: number; y: number }[],
+  color: string,
+  glowColorBase: string,  // e.g. "rgba(255, 0, 0,"
+) {
+  if (points.length < 2) return;
+
+  // Layer 1: Wide soft glow
+  ctx.save();
+  ctx.strokeStyle = glowColorBase + "0.06)";
+  ctx.lineWidth = 22;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // Layer 2: Medium glow
+  ctx.save();
+  ctx.strokeStyle = glowColorBase + "0.15)";
+  ctx.lineWidth = 12;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // Layer 3: Inner glow
+  ctx.save();
+  ctx.strokeStyle = glowColorBase + "0.35)";
+  ctx.lineWidth = 6;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // Layer 4: Main solid line
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3.5;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.stroke();
+  ctx.restore();
+
+  // Layer 5: Core bright highlight (tube specular)
+  ctx.save();
+  ctx.strokeStyle = glowColorBase + "0.5)";
+  ctx.lineWidth = 1.2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
 /** Easing function for smooth animation. */
 function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
@@ -423,6 +624,33 @@ function easeOutCubic(t: number): number {
 
 function easeInOutQuad(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+/**
+ * Determine LBW criteria from trajectory data.
+ * Pitching: IN LINE if pitchPoint.x is between ~0.3-0.7 (within stumps width), else OUTSIDE
+ * Impact: IN LINE if impactPoint.x is similarly within stumps, else OUTSIDE
+ */
+function getLBWCriteria(trajectory: {
+  pitchPoint: { x: number; y: number };
+  impactPoint: { x: number; y: number };
+  predictedPath: "HITTING" | "MISSING";
+}): {
+  pitching: "IN LINE" | "OUTSIDE";
+  impact: "IN LINE" | "OUTSIDE";
+  hitting: "YES" | "NO";
+} {
+  const stumpsLeft = 0.35;  // normalized left stump boundary
+  const stumpsRight = 0.65; // normalized right stump boundary
+
+  const pitchX = trajectory.pitchPoint.x;
+  const impactX = trajectory.impactPoint.x;
+
+  return {
+    pitching: (pitchX >= stumpsLeft && pitchX <= stumpsRight) ? "IN LINE" : "OUTSIDE",
+    impact: (impactX >= stumpsLeft && impactX <= stumpsRight) ? "IN LINE" : "OUTSIDE",
+    hitting: trajectory.predictedPath === "HITTING" ? "YES" : "NO",
+  };
 }
 
 export default function PitchPathVideo({
@@ -488,40 +716,38 @@ export default function PitchPathVideo({
     const { trajectory, frameData } = analysisResult;
     const isHitting = trajectory.predictedPath === "HITTING";
     const totalPoints = frameData.length;
+    const lbwCriteria = getLBWCriteria(trajectory);
 
     // ═══════════════════════════════════════════════════════
-    // BACKGROUND — dark green-black (broadcast DRS overlay)
+    // BACKGROUND — dark almost-black with green tint
     // ═══════════════════════════════════════════════════════
-    const bgGrad = ctx.createRadialGradient(cx, cy * 0.9, 0, cx, cy, w * 0.75);
-    bgGrad.addColorStop(0, "#1a2e1a");
-    bgGrad.addColorStop(0.4, "#122012");
-    bgGrad.addColorStop(0.7, "#0e1a0e");
-    bgGrad.addColorStop(1, "#0a1a0a");
+    const bgGrad = ctx.createRadialGradient(cx, cy * 0.9, 0, cx, cy, w * 0.8);
+    bgGrad.addColorStop(0, "#0d1f0d");
+    bgGrad.addColorStop(0.3, "#0a1a0a");
+    bgGrad.addColorStop(0.6, "#071207");
+    bgGrad.addColorStop(1, "#040c04");
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, w, h);
 
-    // Subtle outfield green around pitch
-    const groundGrad = ctx.createRadialGradient(cx, cy, w * 0.05, cx, cy, w * 0.45);
-    groundGrad.addColorStop(0, "rgba(20, 60, 25, 0.4)");
-    groundGrad.addColorStop(0.5, "rgba(15, 45, 18, 0.25)");
-    groundGrad.addColorStop(1, "transparent");
-    ctx.fillStyle = groundGrad;
-    ctx.fillRect(0, 0, w, h);
-
     // ═══════════════════════════════════════════════════════
-    // PHASE: SETUP — pitch fade-in
+    // PHASE: SETUP — scene fade-in
     // ═══════════════════════════════════════════════════════
     const setupAlpha = progress < PHASE_SETUP
       ? easeOutCubic(progress / PHASE_SETUP)
       : 1.0;
 
     // ═══════════════════════════════════════════════════════
-    // PITCH SURFACE — BROWN/TAN
+    // OUTFIELD SURFACE — LIGHTER GREEN
+    // ═══════════════════════════════════════════════════════
+    drawOutfieldSurface(ctx, cx, cy, flip, w, h, setupAlpha);
+
+    // ═══════════════════════════════════════════════════════
+    // PITCH SURFACE — DARK OLIVE-GREEN (#2D5016)
     // ═══════════════════════════════════════════════════════
     drawPitchSurface(ctx, cx, cy, flip, w, h, setupAlpha);
 
     // ═══════════════════════════════════════════════════════
-    // CREASE LINES
+    // CREASE LINES — thin white lines
     // ═══════════════════════════════════════════════════════
     ctx.save();
     ctx.globalAlpha = setupAlpha;
@@ -568,8 +794,8 @@ export default function PitchPathVideo({
     // ═══════════════════════════════════════════════════════
     // BATTING END STUMPS (highlight when hitting)
     // ═══════════════════════════════════════════════════════
-    const stumpsHighlightAlpha = progress > PHASE_STUMPS && isHitting
-      ? Math.min(1, (progress - PHASE_STUMPS) / (PHASE_SUMMARY - PHASE_STUMPS))
+    const stumpsHighlightAlpha = progress > PHASE_DECISION && isHitting
+      ? Math.min(1, (progress - PHASE_DECISION) / (PHASE_OVERLAY - PHASE_DECISION))
       : 0;
     ctx.save();
     ctx.globalAlpha = setupAlpha;
@@ -585,7 +811,7 @@ export default function PitchPathVideo({
     // STUMP HIT ZONE (translucent rectangle at batting stumps)
     // ═══════════════════════════════════════════════════════
     if (isHitting && progress > PHASE_PREDICTED) {
-      const alpha = Math.min(0.3, (progress - PHASE_PREDICTED) / (PHASE_STUMPS - PHASE_PREDICTED) * 0.3);
+      const alpha = Math.min(0.3, (progress - PHASE_PREDICTED) / (PHASE_DECISION - PHASE_PREDICTED) * 0.3);
       const zoneBL = worldFromPitch(-STUMP_SPREAD - 0.35, PITCH_LENGTH - 0.35, 0);
       const zoneBR = worldFromPitch(STUMP_SPREAD + 0.35, PITCH_LENGTH - 0.35, 0);
       const zoneTL = worldFromPitch(-STUMP_SPREAD - 0.35, PITCH_LENGTH + 0.35, STUMP_HEIGHT);
@@ -636,12 +862,11 @@ export default function PitchPathVideo({
     }
 
     // ═══════════════════════════════════════════════════════
-    // BALL TRAJECTORY — tracked path
+    // BALL TRAJECTORY — tracked path (SOLID RED)
     // ═══════════════════════════════════════════════════════
     if (totalPoints < 2) return;
 
     // Calculate how many points are visible based on progress
-    // Map animation phases to trajectory point visibility
     let trajectoryProgress: number;
     if (progress <= PHASE_RELEASE) {
       trajectoryProgress = 0;
@@ -659,15 +884,15 @@ export default function PitchPathVideo({
       totalPoints
     );
 
-    // Project all visible trajectory points
-    const screenPoints: { x: number; y: number; scale: number; pitchZ: number }[] = [];
+    // Project all visible trajectory points and track world coords for shadow
+    const screenPoints: { x: number; y: number; scale: number; pitchZ: number; worldX: number; worldY: number }[] = [];
     for (let i = 0; i < visibleCount; i++) {
       const fd = frameData[i];
       const t = i / Math.max(totalPoints - 1, 1);
       const pitch = normToPitch(fd.x, fd.y, t);
       const world = worldFromPitch(pitch.pitchX, pitch.pitchY, pitch.pitchZ);
       const sp = project(world.x, world.y, world.z, cx, cy, flip, w, h);
-      if (sp) screenPoints.push({ ...sp, pitchZ: pitch.pitchZ });
+      if (sp) screenPoints.push({ ...sp, pitchZ: pitch.pitchZ, worldX: pitch.pitchX, worldY: pitch.pitchY });
     }
 
     // Release point (always shown after setup)
@@ -681,7 +906,7 @@ export default function PitchPathVideo({
 
       // Glow
       const relGlow = ctx.createRadialGradient(relPt.x, relPt.y, 0, relPt.x, relPt.y, relR * 3);
-      relGlow.addColorStop(0, "rgba(34, 211, 238, 0.4)");
+      relGlow.addColorStop(0, "rgba(255, 80, 80, 0.4)");
       relGlow.addColorStop(1, "transparent");
       ctx.fillStyle = relGlow;
       ctx.beginPath();
@@ -689,13 +914,13 @@ export default function PitchPathVideo({
       ctx.fill();
 
       // Dot
-      ctx.fillStyle = "#22d3ee";
+      ctx.fillStyle = "#FF4444";
       ctx.beginPath();
       ctx.arc(relPt.x, relPt.y, relR, 0, Math.PI * 2);
       ctx.fill();
 
       // Label
-      ctx.fillStyle = "#22d3ee";
+      ctx.fillStyle = "#FF6666";
       ctx.font = `bold ${Math.max(8, 11 * relPt.scale)}px ui-monospace, monospace`;
       ctx.textAlign = "left";
       ctx.fillText("RELEASE", relPt.x + relR + 5, relPt.y + 3);
@@ -703,78 +928,17 @@ export default function PitchPathVideo({
       ctx.restore();
     }
 
-    // ─── TRACKED PATH rendering ───
+    // ─── TRACKED PATH — SOLID RED with 3D tube shading ───
     if (screenPoints.length >= 2) {
-      // Outer glow (bloom effect)
-      ctx.save();
-      ctx.strokeStyle = "rgba(251, 191, 36, 0.08)";
-      ctx.lineWidth = 20;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < screenPoints.length; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
-      ctx.stroke();
-      ctx.restore();
-
-      // Middle glow
-      ctx.save();
-      ctx.strokeStyle = "rgba(251, 191, 36, 0.2)";
-      ctx.lineWidth = 10;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < screenPoints.length; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
-      ctx.stroke();
-      ctx.restore();
-
-      // Inner glow
-      ctx.save();
-      ctx.strokeStyle = "rgba(251, 191, 36, 0.4)";
-      ctx.lineWidth = 5;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < screenPoints.length; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
-      ctx.stroke();
-      ctx.restore();
-
-      // Main solid orange/yellow line
-      ctx.strokeStyle = "rgba(251, 191, 36, 0.95)";
-      ctx.lineWidth = 3;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < screenPoints.length; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
-      ctx.stroke();
-
-      // Core bright line
-      ctx.strokeStyle = "rgba(255, 230, 150, 0.6)";
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.moveTo(screenPoints[0].x, screenPoints[0].y);
-      for (let i = 1; i < screenPoints.length; i++) {
-        ctx.lineTo(screenPoints[i].x, screenPoints[i].y);
-      }
-      ctx.stroke();
+      const pts = screenPoints.map(p => ({ x: p.x, y: p.y }));
+      drawTubePath(ctx, pts, "#FF0000", "rgba(255, 0, 0,");
     }
 
     // ═══════════════════════════════════════════════════════
-    // PITCH POINT marker
+    // PITCH BOUNCE POINT marker — WHITE circle
     // ═══════════════════════════════════════════════════════
-    if (trajectory.pitchPoint && progress > PHASE_PITCH_BOUNCE) {
-      const pitchAlpha = Math.min(1, (progress - PHASE_PITCH_BOUNCE) / 0.05);
+    if (trajectory.pitchPoint && progress > PHASE_BOUNCE) {
+      const pitchAlpha = Math.min(1, (progress - PHASE_BOUNCE) / 0.04);
       const pp = trajectory.pitchPoint;
       const pitchX = (pp.x - 0.5) * 6;
       const pitchY = pp.y * PITCH_LENGTH;
@@ -786,36 +950,47 @@ export default function PitchPathVideo({
         ctx.save();
         ctx.globalAlpha = pitchAlpha;
 
-        // Glow
-        const pitchGlow = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, pr * 3.5);
-        pitchGlow.addColorStop(0, "rgba(16, 185, 129, 0.5)");
-        pitchGlow.addColorStop(0.5, "rgba(16, 185, 129, 0.15)");
+        // Outer ring glow
+        const pitchGlow = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, pr * 3);
+        pitchGlow.addColorStop(0, "rgba(255, 255, 255, 0.3)");
+        pitchGlow.addColorStop(0.5, "rgba(255, 255, 255, 0.1)");
         pitchGlow.addColorStop(1, "transparent");
         ctx.fillStyle = pitchGlow;
         ctx.beginPath();
-        ctx.arc(sp.x, sp.y, pr * 3.5, 0, Math.PI * 2);
+        ctx.arc(sp.x, sp.y, pr * 3, 0, Math.PI * 2);
         ctx.fill();
 
-        // Circle
-        ctx.fillStyle = "#10B981";
+        // White circle outline
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.lineWidth = 2.5;
         ctx.beginPath();
         ctx.arc(sp.x, sp.y, pr, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Inner dot
+        ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, pr * 0.3, 0, Math.PI * 2);
         ctx.fill();
 
         // Crosshair
-        ctx.strokeStyle = "#10B981";
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+        ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(sp.x - pr * 2, sp.y);
+        ctx.lineTo(sp.x - pr * 1.2, sp.y);
+        ctx.moveTo(sp.x + pr * 1.2, sp.y);
         ctx.lineTo(sp.x + pr * 2, sp.y);
         ctx.moveTo(sp.x, sp.y - pr * 2);
+        ctx.lineTo(sp.x, sp.y - pr * 1.2);
+        ctx.moveTo(sp.x, sp.y + pr * 1.2);
         ctx.lineTo(sp.x, sp.y + pr * 2);
         ctx.stroke();
 
         // Label
         ctx.font = `bold ${Math.max(8, 10 * sp.scale)}px ui-monospace, monospace`;
         ctx.textAlign = "left";
-        ctx.fillStyle = "#10B981";
+        ctx.fillStyle = "#FFFFFF";
         ctx.fillText("PITCH", sp.x + pr * 2.5, sp.y - pr);
 
         ctx.restore();
@@ -823,11 +998,11 @@ export default function PitchPathVideo({
     }
 
     // ═══════════════════════════════════════════════════════
-    // PREDICTED PATH (after impact — dashed RED/BLUE)
+    // PREDICTED PATH (after impact — SOLID BLUE #0066FF)
     // ═══════════════════════════════════════════════════════
-    if (progress > PHASE_TO_IMPACT && trajectory.predictedPathPoints.length > 0) {
+    if (progress > PHASE_IMPACT && trajectory.predictedPathPoints.length > 0) {
       const predProgress = easeOutCubic(
-        Math.min(1, (progress - PHASE_TO_IMPACT) / (PHASE_STUMPS - PHASE_TO_IMPACT))
+        Math.min(1, (progress - PHASE_IMPACT) / (PHASE_DECISION - PHASE_IMPACT))
       );
       const predVisibleCount = Math.floor(predProgress * trajectory.predictedPathPoints.length);
       const lastScreen = screenPoints.length > 0 ? screenPoints[screenPoints.length - 1] : null;
@@ -847,69 +1022,24 @@ export default function PitchPathVideo({
         }
 
         if (predScreenPoints.length > 1) {
-          const predColor = isHitting ? "#FF0000" : "#3B82F6";
-          const predGlowColor = isHitting ? "rgba(255, 0, 0," : "rgba(59, 130, 246,";
-
-          // Outer glow
-          ctx.save();
-          ctx.strokeStyle = predGlowColor + "0.08)";
-          ctx.lineWidth = 18;
-          ctx.lineJoin = "round";
-          ctx.beginPath();
-          ctx.moveTo(predScreenPoints[0].x, predScreenPoints[0].y);
-          for (let i = 1; i < predScreenPoints.length; i++) {
-            ctx.lineTo(predScreenPoints[i].x, predScreenPoints[i].y);
-          }
-          ctx.stroke();
-          ctx.restore();
-
-          // Middle glow
-          ctx.save();
-          ctx.strokeStyle = predGlowColor + "0.2)";
-          ctx.lineWidth = 8;
-          ctx.lineJoin = "round";
-          ctx.beginPath();
-          ctx.moveTo(predScreenPoints[0].x, predScreenPoints[0].y);
-          for (let i = 1; i < predScreenPoints.length; i++) {
-            ctx.lineTo(predScreenPoints[i].x, predScreenPoints[i].y);
-          }
-          ctx.stroke();
-          ctx.restore();
-
-          // Main dashed line
-          ctx.strokeStyle = predColor;
-          ctx.lineWidth = 3;
-          ctx.setLineDash([10, 6]);
-          ctx.lineJoin = "round";
-          ctx.lineCap = "round";
-          ctx.beginPath();
-          ctx.moveTo(predScreenPoints[0].x, predScreenPoints[0].y);
-          for (let i = 1; i < predScreenPoints.length; i++) {
-            ctx.lineTo(predScreenPoints[i].x, predScreenPoints[i].y);
-          }
-          ctx.stroke();
-          ctx.setLineDash([]);
-
-          // Dots along prediction
-          for (let i = 1; i < predScreenPoints.length; i += 2) {
-            const pt = predScreenPoints[i];
-            const dotR = Math.max(2, 4 * pt.scale);
-            ctx.fillStyle = predGlowColor + "0.5)";
-            ctx.beginPath();
-            ctx.arc(pt.x, pt.y, dotR, 0, Math.PI * 2);
-            ctx.fill();
-          }
+          // SOLID BLUE predicted path with 3D tube shading
+          const pts = predScreenPoints.map(p => ({ x: p.x, y: p.y }));
+          drawTubePath(ctx, pts, "#0066FF", "rgba(0, 102, 255,");
 
           // ─── IMPACT label ───
+          const impAlpha = Math.min(1, (progress - PHASE_IMPACT) / 0.03);
+          ctx.save();
+          ctx.globalAlpha = impAlpha;
           const impSize = Math.max(8, 11 * lastScreen.scale);
-          ctx.fillStyle = "#F59E0B";
+          ctx.fillStyle = "#FFAA00";
           ctx.font = `bold ${impSize}px ui-monospace, monospace`;
           ctx.textAlign = "left";
           ctx.fillText("IMPACT", lastScreen.x + 10, lastScreen.y - 10);
+          ctx.restore();
 
-          // ─── Decision label near stumps (appears at end) ───
-          if (progress > PHASE_STUMPS) {
-            const labelAlpha = Math.min(1, (progress - PHASE_STUMPS) / (PHASE_SUMMARY - PHASE_STUMPS));
+          // ─── Decision label near stumps (appears at PHASE_DECISION) ───
+          if (progress > PHASE_DECISION) {
+            const labelAlpha = Math.min(1, (progress - PHASE_DECISION) / (PHASE_OVERLAY - PHASE_DECISION));
             const endPred = predScreenPoints[predScreenPoints.length - 1];
 
             ctx.save();
@@ -920,8 +1050,7 @@ export default function PitchPathVideo({
             ctx.textAlign = "left";
 
             if (isHitting) {
-              // "HITTING WICKET" in red with background
-              const labelText = "HITTING WICKET";
+              const labelText = "HITTING";
               const labelW = ctx.measureText(labelText).width;
               const labelPad = 6;
               const labelX = endPred.x + 10;
@@ -930,48 +1059,53 @@ export default function PitchPathVideo({
               // Background box
               ctx.fillStyle = "rgba(255, 0, 0, 0.2)";
               ctx.beginPath();
-              const rr = 3;
-              ctx.roundRect(labelX - labelPad, labelY - labelSize + 2, labelW + labelPad * 2, labelSize + labelPad, rr);
+              ctx.roundRect(labelX - labelPad, labelY - labelSize + 2, labelW + labelPad * 2, labelSize + labelPad, 3);
               ctx.fill();
               ctx.strokeStyle = "rgba(255, 0, 0, 0.6)";
               ctx.lineWidth = 1;
               ctx.stroke();
 
-              // Text
               ctx.fillStyle = "#FF4444";
               ctx.fillText(labelText, labelX, labelY);
-
-              // Checkmark
-              ctx.fillStyle = "#22C55E";
-              ctx.font = `bold ${labelSize * 1.2}px ui-monospace, monospace`;
-              ctx.fillText("✓", labelX + labelW + 8, labelY + 2);
             } else {
-              // "MISSING WICKET" in blue with background
-              const labelText = "MISSING WICKET";
+              const labelText = "MISSING";
               const labelW = ctx.measureText(labelText).width;
               const labelPad = 6;
               const labelX = endPred.x + 10;
               const labelY = endPred.y + 5;
 
-              ctx.fillStyle = "rgba(59, 130, 246, 0.2)";
+              ctx.fillStyle = "rgba(0, 102, 255, 0.2)";
               ctx.beginPath();
-              const rr = 3;
-              ctx.roundRect(labelX - labelPad, labelY - labelSize + 2, labelW + labelPad * 2, labelSize + labelPad, rr);
+              ctx.roundRect(labelX - labelPad, labelY - labelSize + 2, labelW + labelPad * 2, labelSize + labelPad, 3);
               ctx.fill();
-              ctx.strokeStyle = "rgba(59, 130, 246, 0.6)";
+              ctx.strokeStyle = "rgba(0, 102, 255, 0.6)";
               ctx.lineWidth = 1;
               ctx.stroke();
 
-              ctx.fillStyle = "#60A5FA";
+              ctx.fillStyle = "#4499FF";
               ctx.fillText(labelText, labelX, labelY);
-
-              // X mark
-              ctx.fillStyle = "#EF4444";
-              ctx.font = `bold ${labelSize * 1.2}px ui-monospace, monospace`;
-              ctx.fillText("✗", labelX + labelW + 8, labelY + 2);
             }
 
             ctx.restore();
+          }
+
+          // ─── Ball follows predicted path ───
+          if (progress < PHASE_DECISION && predScreenPoints.length > 1) {
+            const ballPt = predScreenPoints[predScreenPoints.length - 1];
+            const ballR = Math.max(5, 14 * ballPt.scale);
+
+            // Ball shadow on pitch surface
+            const lastPredIdx = predVisibleCount - 1;
+            if (lastPredIdx >= 0 && lastPredIdx < trajectory.predictedPathPoints.length) {
+              const pp = trajectory.predictedPathPoints[lastPredIdx];
+              const t = lastPredIdx / Math.max(trajectory.predictedPathPoints.length - 1, 1);
+              const pitchZ = Math.max(0, 2.5 * (1 - t * 1.3));
+              const pitchX = (pp.x - 0.5) * 6;
+              const pitchY = pp.y * PITCH_LENGTH;
+              drawBallShadow(ctx, pitchX, pitchY, pitchZ, cx, cy, flip, w, h);
+            }
+
+            drawCricketBall(ctx, ballPt.x, ballPt.y, ballR);
           }
         }
       }
@@ -984,6 +1118,10 @@ export default function PitchPathVideo({
       const curr = screenPoints[screenPoints.length - 1];
       const ballR = Math.max(5, 16 * curr.scale);
 
+      // Draw ball shadow on pitch surface below ball
+      drawBallShadow(ctx, curr.worldX, curr.worldY, curr.pitchZ, cx, cy, flip, w, h);
+
+      // Draw ball
       drawCricketBall(ctx, curr.x, curr.y, ballR);
     }
 
@@ -995,7 +1133,6 @@ export default function PitchPathVideo({
       ctx.save();
       ctx.globalAlpha = speedAlpha;
 
-      // Background pill
       const speedText = `${trajectory.ballSpeed} km/h`;
       const speedFS = Math.max(11, w * 0.02);
       ctx.font = `bold ${speedFS}px ui-monospace, monospace`;
@@ -1007,7 +1144,7 @@ export default function PitchPathVideo({
       ctx.roundRect(w - speedW - speedPad * 2 - 12, 10, speedW + speedPad * 2, speedFS + speedPad, 4);
       ctx.fill();
 
-      ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
       ctx.textAlign = "right";
       ctx.fillText(speedText, w - 12 - speedPad, 10 + speedFS);
 
@@ -1015,12 +1152,76 @@ export default function PitchPathVideo({
     }
 
     // ═══════════════════════════════════════════════════════
+    // LBW CRITERIA PANEL — right side, appears progressively
+    // ═══════════════════════════════════════════════════════
+    if (progress > PHASE_BOUNCE) {
+      const panelAlpha = Math.min(0.9, (progress - PHASE_BOUNCE) * 3);
+      const panelFS = Math.max(10, w * 0.016);
+      const lineH = panelFS * 1.8;
+      const panelPadX = 12;
+      const panelPadY = 10;
+      const panelW = 160;
+      const panelX = w - panelW - 16;
+      const panelBaseY = 50;
+
+      ctx.save();
+      ctx.globalAlpha = panelAlpha;
+
+      // Panel background
+      ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+      ctx.beginPath();
+      ctx.roundRect(panelX - panelPadX, panelBaseY - panelPadY, panelW + panelPadX * 2, lineH * 3 + panelPadY * 2 + 8, 5);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.font = `bold ${panelFS}px ui-monospace, monospace`;
+      ctx.textAlign = "left";
+
+      // ── PITCHING ──
+      const pitchingAppear = progress > PHASE_BOUNCE
+        ? Math.min(1, (progress - PHASE_BOUNCE) / 0.06)
+        : 0;
+      ctx.globalAlpha = panelAlpha * pitchingAppear;
+      const pitchingColor = lbwCriteria.pitching === "IN LINE" ? "#22C55E" : "#F59E0B";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+      ctx.fillText("PITCHING:", panelX, panelBaseY + panelFS);
+      ctx.fillStyle = pitchingColor;
+      ctx.fillText(lbwCriteria.pitching, panelX + panelW - ctx.measureText(lbwCriteria.pitching).width, panelBaseY + panelFS);
+
+      // ── IMPACT ──
+      const impactAppear = progress > PHASE_IMPACT
+        ? Math.min(1, (progress - PHASE_IMPACT) / 0.06)
+        : 0;
+      ctx.globalAlpha = panelAlpha * impactAppear;
+      const impactColor = lbwCriteria.impact === "IN LINE" ? "#22C55E" : "#F59E0B";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+      ctx.fillText("IMPACT:", panelX, panelBaseY + panelFS + lineH);
+      ctx.fillStyle = impactColor;
+      ctx.fillText(lbwCriteria.impact, panelX + panelW - ctx.measureText(lbwCriteria.impact).width, panelBaseY + panelFS + lineH);
+
+      // ── HITTING ──
+      const hittingAppear = progress > PHASE_DECISION
+        ? Math.min(1, (progress - PHASE_DECISION) / 0.06)
+        : 0;
+      ctx.globalAlpha = panelAlpha * hittingAppear;
+      const hittingColor = lbwCriteria.hitting === "YES" ? "#22C55E" : "#EF4444";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+      ctx.fillText("HITTING:", panelX, panelBaseY + panelFS + lineH * 2);
+      ctx.fillStyle = hittingColor;
+      ctx.fillText(lbwCriteria.hitting, panelX + panelW - ctx.measureText(lbwCriteria.hitting).width, panelBaseY + panelFS + lineH * 2);
+
+      ctx.restore();
+    }
+
+    // ═══════════════════════════════════════════════════════
     // LEGEND — bottom bar
     // ═══════════════════════════════════════════════════════
-    if (progress > 0.15) {
-      const legendAlpha = Math.min(0.7, (progress - 0.15) * 3);
+    if (progress > 0.18) {
+      const legendAlpha = Math.min(0.65, (progress - 0.18) * 3);
       const legendY = h - 18;
-      const legendFS = Math.max(9, w * 0.014);
+      const legendFS = Math.max(9, w * 0.013);
 
       ctx.save();
       ctx.globalAlpha = legendAlpha;
@@ -1033,27 +1234,27 @@ export default function PitchPathVideo({
 
       ctx.font = `${legendFS}px ui-monospace, monospace`;
       ctx.textAlign = "left";
-      const items: Array<{ x: number; label: string; type: "line" | "dash" | "dot"; color: string }> = [];
+      const items: Array<{ x: number; label: string; type: "line" | "dot"; color: string }> = [];
       let offsetX = 20;
 
-      // Tracked path
-      items.push({ x: offsetX, label: "Tracked Path", type: "line", color: "#FBBF24" });
+      // Tracked path — RED solid
+      items.push({ x: offsetX, label: "Tracked Path", type: "line", color: "#FF0000" });
       offsetX += 100;
 
-      // Predicted path
-      items.push({ x: offsetX, label: "Predicted Path", type: "dash", color: isHitting ? "#FF0000" : "#3B82F6" });
-      offsetX += 120;
+      // Predicted path — BLUE solid
+      items.push({ x: offsetX, label: "Predicted Path", type: "line", color: "#0066FF" });
+      offsetX += 110;
 
       // Release
-      items.push({ x: offsetX, label: "Release", type: "dot", color: "#22d3ee" });
-      offsetX += 70;
+      items.push({ x: offsetX, label: "Release", type: "dot", color: "#FF4444" });
+      offsetX += 65;
 
       // Pitch point
-      items.push({ x: offsetX, label: "Pitch Point", type: "dot", color: "#10B981" });
-      offsetX += 90;
+      items.push({ x: offsetX, label: "Pitch Point", type: "dot", color: "#FFFFFF" });
+      offsetX += 85;
 
       // Impact
-      items.push({ x: offsetX, label: "Impact", type: "dot", color: "#F59E0B" });
+      items.push({ x: offsetX, label: "Impact", type: "dot", color: "#FFAA00" });
 
       for (const item of items) {
         if (item.type === "line") {
@@ -1064,15 +1265,6 @@ export default function PitchPathVideo({
           ctx.moveTo(item.x, legendY);
           ctx.lineTo(item.x + 16, legendY);
           ctx.stroke();
-        } else if (item.type === "dash") {
-          ctx.strokeStyle = item.color;
-          ctx.lineWidth = 2;
-          ctx.setLineDash([4, 3]);
-          ctx.beginPath();
-          ctx.moveTo(item.x, legendY);
-          ctx.lineTo(item.x + 16, legendY);
-          ctx.stroke();
-          ctx.setLineDash([]);
         } else {
           ctx.fillStyle = item.color;
           ctx.beginPath();
@@ -1088,46 +1280,55 @@ export default function PitchPathVideo({
     }
 
     // ═══════════════════════════════════════════════════════
-    // "HAWK-EYE" WATERMARK — bottom-left (subtle)
+    // "HAWK-EYE" WATERMARK — bottom-left
     // ═══════════════════════════════════════════════════════
-    ctx.fillStyle = "rgba(255, 255, 255, 0.12)";
-    ctx.font = `bold ${Math.max(10, w * 0.018)}px ui-monospace, monospace`;
+    const hawkEyeAlpha = Math.min(0.25, (progress / PHASE_SETUP) * 0.25);
+    ctx.save();
+    ctx.globalAlpha = hawkEyeAlpha;
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = `bold ${Math.max(12, w * 0.02)}px ui-monospace, monospace`;
     ctx.textAlign = "left";
-    ctx.fillText("HAWK-EYE", 14, 24);
+    ctx.fillText("HAWK-EYE", 14, h - 32);
+    ctx.restore();
 
     // ═══════════════════════════════════════════════════════
-    // DECISION BADGE — top-left (appears at summary)
+    // DECISION OVERLAY — OUT/NOT OUT (appears at final phase)
     // ═══════════════════════════════════════════════════════
-    if (progress > PHASE_SUMMARY) {
-      const badgeAlpha = Math.min(1, (progress - PHASE_SUMMARY) / 0.05);
+    if (progress > PHASE_OVERLAY) {
+      const badgeAlpha = Math.min(1, (progress - PHASE_OVERLAY) / 0.05);
       ctx.save();
       ctx.globalAlpha = badgeAlpha;
 
-      const decisionText = analysisResult.decision === "OUT" ? "OUT" : "NOT OUT";
-      const decisionColor = analysisResult.decision === "OUT" ? "#EF4444" : "#22C55E";
-      const badgeFS = Math.max(12, w * 0.025);
+      const isOut = analysisResult.decision === "OUT";
+      const decisionText = isOut ? "OUT" : "NOT OUT";
+      const decisionColor = isOut ? "#EF4444" : "#22C55E";
+      const badgeFS = Math.max(14, w * 0.032);
 
       ctx.font = `bold ${badgeFS}px ui-monospace, monospace`;
       const badgeW = ctx.measureText(decisionText).width;
-      const badgePad = 12;
+      const badgePad = 14;
 
-      // Background pill
-      ctx.fillStyle = analysisResult.decision === "OUT"
-        ? "rgba(239, 68, 68, 0.2)"
-        : "rgba(34, 197, 94, 0.2)";
+      // Large background pill — centered at top
+      const badgeX = (w - badgeW - badgePad * 2) / 2;
+      const badgeY = 12;
+
+      ctx.fillStyle = isOut ? "rgba(239, 68, 68, 0.25)" : "rgba(34, 197, 94, 0.25)";
       ctx.beginPath();
-      ctx.roundRect(14, 32, badgeW + badgePad * 2, badgeFS + badgePad, 5);
+      ctx.roundRect(badgeX, badgeY, badgeW + badgePad * 2, badgeFS + badgePad, 6);
       ctx.fill();
 
-      ctx.strokeStyle = analysisResult.decision === "OUT"
-        ? "rgba(239, 68, 68, 0.6)"
-        : "rgba(34, 197, 94, 0.6)";
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = isOut ? "rgba(239, 68, 68, 0.7)" : "rgba(34, 197, 94, 0.7)";
+      ctx.lineWidth = 2;
       ctx.stroke();
 
       ctx.fillStyle = decisionColor;
-      ctx.textAlign = "left";
-      ctx.fillText(decisionText, 14 + badgePad, 32 + badgeFS + 4);
+      ctx.textAlign = "center";
+      ctx.fillText(decisionText, w / 2, badgeY + badgeFS + 4);
+
+      // Ball speed underneath
+      ctx.font = `bold ${badgeFS * 0.5}px ui-monospace, monospace`;
+      ctx.fillStyle = "rgba(255, 255, 255, 0.6)";
+      ctx.fillText(`${trajectory.ballSpeed} km/h`, w / 2, badgeY + badgeFS + badgePad + badgeFS * 0.7);
 
       ctx.restore();
     }
@@ -1156,7 +1357,7 @@ export default function PitchPathVideo({
       lastTimeRef.current = timestamp;
 
       if (isPlayingRef.current) {
-        // Increment based on 6-second total duration
+        // Increment based on 5-second total duration
         const increment = (deltaMs / ANIM_DURATION_MS) * playbackSpeedRef.current;
         progressRef.current = Math.min(1.0, progressRef.current + increment);
         onProgress?.(progressRef.current);

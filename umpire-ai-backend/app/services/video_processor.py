@@ -1,14 +1,19 @@
 """
-Video processing orchestrator — v3.
+Video processing orchestrator — v4.
 
-Key improvements over v2:
-    - **Ball release detection**: Identifies the frame where the ball leaves
-      the bowler's hand using velocity/jerk analysis. Run-up frames are
-      excluded from trajectory estimation.
+Key improvements over v3:
+    - **Ball release detection**: Multi-signal approach combining size
+      consistency, velocity direction, speed threshold, y-acceleration,
+      and consecutive-frame validation.  Replaces the unreliable
+      acceleration-based detection that still included run-up frames.
+    - **Normalised prediction path**: Weighted linear + conditional
+      quadratic extrapolation with bounds checking (x clamped to
+      [0.1, 0.9]) and 30 sample points for smoother frontend animation.
+    - **Trajectory estimation**: Defaults to linear KF with post-smoothing
+      instead of UKF — the 3-D physics model is counterproductive for
+      single-camera 2-D pixel data.
     - **Impact detection**: Identifies when the ball hits the batsman's pad
       by detecting sudden velocity changes near the batting crease.
-    - **Proper prediction path**: Generates normalised pitch-coordinate
-      predictions from the impact point to the stumps for LBW analysis.
     - **Cleaner trajectory output**: Only returns post-release trajectory
       points to the frontend.
 """
@@ -102,7 +107,7 @@ class VideoProcessor:
             frame_h = video_info.get("height", 720)
 
             callbacks.on_progress and callbacks.on_progress(
-                0.0, "Initialising v4 pipeline with airborne release detection"
+                0.0, "Initialising v4 pipeline with multi-signal release detection"
             )
 
             detection_tier = self.settings.detection_tier
@@ -385,80 +390,160 @@ class VideoProcessor:
         frame_height: int,
         min_detections: int = 6,
     ) -> Optional[int]:
-        """Detect ball release using velocity/jerk analysis.
-    
-        Real DRS starts tracking when the ball becomes a FAST-MOVING PROJECTILE.
-        During run-up, ball moves with bowler (low speed, high y-position). 
-        At release, ball suddenly ACCELERATES and moves down the pitch rapidly.
-        
-        Key signals:
-        1. VELOCITY JUMP: Ball speed suddenly increases (release = acceleration)
-        2. Y-DIRECTION CHANGE: Ball starts moving downward (toward batsman)
-        3. ACCELERATION (jerk): Second derivative of position spikes at release
-        
-        We find the frame with maximum acceleration in the first half of detections.
-        
+        """Detect ball release using a MULTI-SIGNAL approach.
+
+        Real Hawk-Eye detects release by sudden velocity divergence from the
+        bowler's body.  We approximate this with five complementary signals:
+
+        Signal 1 — SIZE CONSISTENCY: After release the ball is a small,
+            consistently-sized object (radius 3-8 px).  During run-up,
+            detections may include the bowler's hand/arm (larger, variable).
+        Signal 2 — VELOCITY DIRECTION: After release the ball moves DOWN
+            THE PITCH (y increases rapidly).  During run-up the ball moves
+            with the bowler (mostly horizontal/lateral).
+        Signal 3 — SPEED THRESHOLD: After release the ball exceeds a
+            minimum speed threshold (fastest-moving small object).
+        Signal 4 — Y-ACCELERATION: After release the ball accelerates
+            downward due to gravity.  Before release it moves at constant
+            or accelerating speed toward the bowling crease.
+        Signal 5 — CONSECUTIVE CONSISTENT FRAMES: At least N frames AFTER
+            the candidate must also show ball-like properties.
+
+        Algorithm
+        ---------
+        1.  Compute per-frame speed, size, y-velocity from detections.
+        2.  For each candidate frame (within the first 60 %) check ALL:
+            * speed  > median speed
+            * y-velocity > 0  (moving toward batsman)
+            * radius < median + 1 std  (small and consistent)
+        3.  Validate the candidate by confirming that the next 3-4 frames
+            also satisfy these conditions.
+        4.  Fallback: pick the frame with highest speed in the first 60 %.
+
         Returns index into the detections list, or None if indeterminate.
         """
         if len(detections) < min_detections:
             return None
-    
+
         n = len(detections)
-    
-        # Compute per-frame velocities
-        vx_list = []
-        vy_list = []
+
+        # --------------------------------------------------------------
+        # Step 1: Compute per-frame metrics
+        # --------------------------------------------------------------
+        speeds: List[float] = []          # scalar speed per frame transition
+        y_velocities: List[float] = []    # dy per frame transition
+        radii: List[float] = [detections[0]["radius"]]
+
         for i in range(1, n):
-            dx = detections[i]["x"] - detections[i-1]["x"]
-            dy = detections[i]["y"] - detections[i-1]["y"]
-            dt = max(detections[i]["timestamp"] - detections[i-1]["timestamp"], 1e-6)
-            vx_list.append(dx / dt)
-            vy_list.append(dy / dt)
-    
-        if len(vx_list) < 3:
+            dx = detections[i]["x"] - detections[i - 1]["x"]
+            dy = detections[i]["y"] - detections[i - 1]["y"]
+            dt = max(detections[i]["timestamp"] - detections[i - 1]["timestamp"], 1e-6)
+            speeds.append(float(np.sqrt(dx * dx + dy * dy)) / dt)
+            y_velocities.append(dy / dt)
+            radii.append(detections[i]["radius"])
+
+        if len(speeds) < 3:
             return 0
-    
-        # Compute acceleration (change in velocity)
-        ax_list = []
-        for i in range(1, len(vx_list)):
-            dt = max(detections[i+1]["timestamp"] - detections[i]["timestamp"], 1e-6)
-            ax = (vx_list[i] - vx_list[i-1]) / dt
-            ay = (vy_list[i] - vy_list[i-1]) / dt
-            accel_mag = float(np.sqrt(ax*ax + ay*ay))
-            ax_list.append(accel_mag)
-    
-        if not ax_list:
-            return 0
-    
-        # Smooth accelerations
-        win = min(3, max(2, len(ax_list) // 4))
-        if win > 1 and len(ax_list) >= win:
-            kernel = np.ones(win) / win
-            smoothed_accel = np.convolve(ax_list, kernel, mode='same').tolist()
-        else:
-            smoothed_accel = ax_list
-    
-        # Search in first 50% of detections for maximum acceleration
-        search_limit = max(len(smoothed_accel) // 2, 5)
-    
-        # Find the peak acceleration
-        peak_idx = 0
-        peak_val = 0
-        for i in range(min(search_limit, len(smoothed_accel))):
-            if smoothed_accel[i] > peak_val:
-                peak_val = smoothed_accel[i]
-                peak_idx = i
-    
-        # Release is 1-2 frames BEFORE the acceleration peak
-        # (acceleration peaks just after release as ball reaches max speed)
-        release_idx = max(0, peak_idx - 1)
-    
-        logger.info(
-            "Release detection: acceleration-based (peak_idx=%d, release_idx=%d, "
-            "peak_accel=%.1f)",
-            peak_idx, release_idx, peak_val,
+
+        # Statistics over the full detection set
+        median_speed = float(np.median(speeds))
+        radii_arr = np.array(radii, dtype=np.float64)
+        median_radius = float(np.median(radii_arr))
+        std_radius = float(np.std(radii_arr))
+        radius_upper = median_radius + std_radius
+
+        logger.debug(
+            "Release detection stats: median_speed=%.1f, median_radius=%.1f, "
+            "std_radius=%.1f, radius_upper=%.1f",
+            median_speed, median_radius, std_radius, radius_upper,
         )
-        return release_idx
+
+        # --------------------------------------------------------------
+        # Step 2: Score each candidate frame
+        # --------------------------------------------------------------
+        # speeds[i] corresponds to the transition from detection i to i+1,
+        # so we test detection index (i+1) as the candidate release frame.
+        search_limit = int(n * 0.60)
+        validate_window = min(4, len(speeds) - 1)
+
+        best_candidate: Optional[int] = None
+
+        for i in range(min(search_limit - 1, len(speeds) - validate_window)):
+            candidate_idx = i + 1  # detection index after the transition
+
+            # Signal 1: SIZE — must be small and consistent
+            if radii[candidate_idx] > radius_upper:
+                continue
+
+            # Signal 2: VELOCITY DIRECTION — y must be increasing (down the pitch)
+            if y_velocities[i] <= 0:
+                continue
+
+            # Signal 3: SPEED THRESHOLD — must be above median
+            if speeds[i] <= median_speed:
+                continue
+
+            # Signal 4: Y-ACCELERATION — check that y-velocity is positive
+            # and growing compared to the previous frame
+            y_accel_ok = True
+            if i >= 1 and y_velocities[i - 1] <= 0:
+                # y-velocity went from non-positive to positive — good
+                y_accel_ok = True
+            elif i >= 1 and y_velocities[i] < y_velocities[i - 1]:
+                # y-velocity decreased — might not be genuine release
+                y_accel_ok = False
+
+            if not y_accel_ok:
+                continue
+
+            # Signal 5: CONSECUTIVE VALIDATION — next N frames must also qualify
+            consecutive_ok = True
+            for j in range(1, validate_window + 1):
+                check_speed_idx = i + j
+                check_det_idx = candidate_idx + j
+                if check_speed_idx >= len(speeds) or check_det_idx >= n:
+                    break
+                # Subsequent frames must still be moving down-pitch
+                if y_velocities[check_speed_idx] <= 0:
+                    consecutive_ok = False
+                    break
+                # Subsequent frames must stay small
+                if radii[check_det_idx] > radius_upper * 1.2:
+                    consecutive_ok = False
+                    break
+
+            if consecutive_ok:
+                best_candidate = candidate_idx
+                logger.debug(
+                    "Release candidate found at det_idx=%d (speed=%.1f, "
+                    "y_vel=%.1f, radius=%.1f)",
+                    candidate_idx, speeds[i], y_velocities[i],
+                    radii[candidate_idx],
+                )
+                break  # take the earliest qualifying frame
+
+        # --------------------------------------------------------------
+        # Step 3: Fallback — highest speed in first 60 %
+        # --------------------------------------------------------------
+        if best_candidate is None:
+            peak_speed_idx = int(np.argmax(speeds[:min(search_limit, len(speeds))]))
+            best_candidate = peak_speed_idx + 1
+            logger.info(
+                "Release detection: fallback to highest-speed frame at det_idx=%d "
+                "(speed=%.1f)",
+                best_candidate, speeds[peak_speed_idx],
+            )
+        else:
+            logger.info(
+                "Release detection: multi-signal at det_idx=%d "
+                "(speed=%.1f, y_vel=%.1f, radius=%.1f)",
+                best_candidate,
+                speeds[max(best_candidate - 1, 0)],
+                y_velocities[max(best_candidate - 1, 0)],
+                radii[best_candidate],
+            )
+
+        return min(best_candidate, n - 1)
 
     # ------------------------------------------------------------------
     # Impact detection
@@ -539,60 +624,86 @@ class VideoProcessor:
         frame_shape: Tuple[int, ...],
     ) -> List[Dict[str, float]]:
         """Build normalised prediction path from impact point to stumps.
-    
-        Uses quadratic extrapolation from the LAST segment of the trajectory
-        (post-pitch path) to predict where the ball would go at the stump line.
+
+        Uses a **weighted combination** of linear and (optionally) quadratic
+        extrapolation from the last segment of the trajectory.  This avoids
+        the wild curves that pure quadratic fits can produce when the data
+        is sparse or noisy.
+
+        Rules:
+        * Linear fit is always computed (stable baseline).
+        * Quadratic component is blended in only when we have 8+ points AND
+          the quadratic coefficient is small enough (|a| < 0.5) to be
+          trustworthy.
+        * Predicted x is clamped to [0.1, 0.9] — the ball cannot leave
+          the frame.
+        * 30 sample points are generated for smooth frontend animation.
         """
         if not trajectory_result.points or len(trajectory_result.points) < 4:
             return []
-    
+
         points = trajectory_result.points
-    
+
         # Use last N points for extrapolation (post-bounce trajectory)
         n_fit = min(8, max(4, len(points) // 2))
         recent = points[-n_fit:]
-    
-        # Fit quadratic: x = a*y^2 + b*y + c
+
         ys = np.array([p.y for p in recent])
         xs = np.array([p.x for p in recent])
-    
+
         if len(np.unique(ys)) < 2:
             return []
-    
-        # Try quadratic fit first
-        if len(recent) >= 5:
+
+        # --- Linear fit (always available) ---
+        try:
+            lin_coeffs = np.polyfit(ys, xs, 1)   # [slope, intercept]
+        except (np.linalg.LinAlgError, ValueError):
+            return []
+
+        # --- Quadratic fit (conditional) ---
+        use_quadratic = False
+        quad_coeffs = None
+        if len(recent) >= 8:
             try:
-                coeffs = np.polyfit(ys, xs, 2)  # quadratic
+                qc = np.polyfit(ys, xs, 2)  # [a, b, c]
+                if abs(qc[0]) < 0.5:          # reasonable curvature
+                    quad_coeffs = qc
+                    use_quadratic = True
             except (np.linalg.LinAlgError, ValueError):
-                coeffs = np.polyfit(ys, xs, 1)  # fallback linear
-        else:
-            coeffs = np.polyfit(ys, xs, 1)
-    
-        # Generate prediction from last point to stump line
+                pass
+
+        # --- Generate prediction points ---
         last_point = points[-1]
         start_y = last_point.y
-        end_y = 0.95  # stump line in normalized coords
-    
+        end_y = 0.95  # stump line in normalised coords
+
         if end_y <= start_y:
             return []
-    
-        n_steps = 20
-        prediction = []
+
+        n_steps = 30
+        prediction: List[Dict[str, float]] = []
         for i in range(1, n_steps + 1):
             t = i / n_steps
             y_norm = start_y + t * (end_y - start_y)
-            x_norm = float(np.polyval(coeffs, y_norm))
-    
-            # Clamp to valid range
-            x_norm = max(0.05, min(0.95, x_norm))
+
+            # Weighted blend: quadratic contribution grows from 0 to 0.4
+            # as we move further from the last known point.
+            quad_weight = 0.4 if use_quadratic else 0.0
+            x_lin = float(np.polyval(lin_coeffs, y_norm))
+            x_quad = float(np.polyval(quad_coeffs, y_norm)) if use_quadratic else x_lin
+
+            x_norm = (1.0 - quad_weight) * x_lin + quad_weight * x_quad
+
+            # Clamp to valid range — ball can't go off-screen
+            x_norm = max(0.1, min(0.9, x_norm))
             y_norm = max(0.0, min(1.0, y_norm))
-    
+
             prediction.append({
                 "x": round(x_norm, 4),
                 "y": round(y_norm, 4),
                 "z": 0.0,
             })
-    
+
         return prediction
 
     # ------------------------------------------------------------------
@@ -710,7 +821,7 @@ class VideoProcessor:
 
             draw_frame_info(frame, frame_idx, frame_idx / fps, fps)
 
-            cv2.putText(frame, "Umpire AI v4 — Airborne Release Detection",
+            cv2.putText(frame, "Umpire AI v4 — Multi-Signal Release Detection",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
             writer.write(frame)
