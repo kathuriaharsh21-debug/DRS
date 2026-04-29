@@ -53,6 +53,8 @@ function transformResult(data: any): AnalysisResult {
   };
 }
 
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "https://umpire-ai-backend.onrender.com";
+
 export default function Home() {
   const [screen, setScreen] = useState<ScreenState>("upload");
   const [videoUrl, setVideoUrl] = useState<string>("");
@@ -67,19 +69,19 @@ export default function Home() {
     setIsProcessing(true);
     setError(null);
     setScreen("processing");
-    setProcessingMessage("Uploading video to server...");
+    setProcessingMessage("Uploading video to analysis backend...");
     setProcessingProgress(0);
 
     const abortController = new AbortController();
     abortRef.current = abortController;
 
     try {
-      // Step 1: Upload video and start analysis
+      // Step 1: Upload video DIRECTLY to Render backend (bypasses Vercel 4.5MB body limit)
       const formData = new FormData();
       formData.append("file", file);
       formData.append("ball_type", "red");
 
-      const uploadRes = await fetch("/api/process-video", {
+      const uploadRes = await fetch(`${BACKEND_URL}/api/upload-and-analyze`, {
         method: "POST",
         body: formData,
         signal: abortController.signal,
@@ -107,7 +109,7 @@ export default function Home() {
 
       setProcessingMessage("Analysis started, processing frames...");
 
-      // Step 2: Poll for analysis status
+      // Step 2: Poll for analysis status via Vercel proxy (lightweight JSON payloads)
       const POLL_INTERVAL = 3000;
       const MAX_WAIT = 600000; // 10 minutes max
       const startTime = Date.now();
