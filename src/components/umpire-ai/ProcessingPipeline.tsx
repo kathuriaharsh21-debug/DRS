@@ -7,77 +7,71 @@ const PROCESSING_STEPS = [
   {
     id: "frame-extraction",
     label: "Frame Extraction",
-    description: "Extracting key frames from video at 60fps...",
-    duration: 700,
+    description: "Extracting key frames from video...",
   },
   {
     id: "ball-detection",
     label: "Ball Detection",
-    description: "Running YOLO v8 model for ball tracking...",
-    duration: 800,
+    description: "Running CV detection for ball tracking...",
   },
   {
     id: "trajectory-estimation",
     label: "Trajectory Estimation",
-    description: "Computing 3D ball trajectory using stereo vision...",
-    duration: 700,
+    description: "Computing ball trajectory with filtering...",
   },
   {
     id: "pitch-map",
     label: "Pitch Map Analysis",
     description: "Mapping ball path on pitch coordinates...",
-    duration: 600,
   },
   {
     id: "decision-engine",
     label: "Decision Engine",
     description: "Running rule-based analysis with confidence scoring...",
-    duration: 700,
   },
 ];
 
 interface ProcessingPipelineProps {
   isComplete: boolean;
+  progress?: number;        // 0-100 from backend
+  message?: string;         // status message from backend
 }
 
-export default function ProcessingPipeline({ isComplete }: ProcessingPipelineProps) {
+export default function ProcessingPipeline({ isComplete, progress = 0, message }: ProcessingPipelineProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const [stepProgress, setStepProgress] = useState(0);
   const completeHandledRef = useRef(false);
 
-  // Handle completion synchronously via render, not effect
-  const displayStep = isComplete ? PROCESSING_STEPS.length : currentStep;
-  const displayProgress = isComplete ? 100 : stepProgress;
-
+  // Map real backend progress to step visualization
   useEffect(() => {
     if (isComplete) {
       completeHandledRef.current = true;
+      setCurrentStep(PROCESSING_STEPS.length);
+      setStepProgress(100);
       return;
     }
 
     completeHandledRef.current = false;
 
-    const step = PROCESSING_STEPS[currentStep];
-    if (!step) return;
+    // Derive current step and step-progress from overall backend progress
+    const stepCount = PROCESSING_STEPS.length;
+    const scaledProgress = (progress / 100) * stepCount;
+    const activeStepIndex = Math.min(Math.floor(scaledProgress), stepCount - 1);
+    const progressWithinStep = (scaledProgress - activeStepIndex) * 100;
 
-    // Progress within current step
-    const progressInterval = setInterval(() => {
-      setStepProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(progressInterval);
-          // Move to next step
-          setTimeout(() => {
-            setCurrentStep((s) => s + 1);
-            setStepProgress(0);
-          }, 100);
-          return 100;
-        }
-        return prev + (100 / (step.duration / 50));
-      });
-    }, 50);
+    setCurrentStep(activeStepIndex);
+    setStepProgress(Math.min(progressWithinStep, 100));
 
-    return () => clearInterval(progressInterval);
-  }, [currentStep, isComplete]);
+    // Update step descriptions based on backend message
+    if (message) {
+      if (message.includes("Frame") || message.includes("frame")) {
+        // Already extracting/detecting
+      }
+    }
+  }, [progress, message, isComplete]);
+
+  const displayStep = isComplete ? PROCESSING_STEPS.length : currentStep;
+  const displayProgress = isComplete ? 100 : stepProgress;
 
   const overallProgress = Math.min(
     100,
@@ -91,15 +85,21 @@ export default function ProcessingPipeline({ isComplete }: ProcessingPipelinePro
         <div className="flex items-center justify-between mb-2">
           <span className="text-sm text-muted-foreground">Analyzing Video</span>
           <span className="text-sm font-mono text-emerald-400">
-            {Math.round(overallProgress)}%
+            {Math.round(Math.max(overallProgress, progress))}%
           </span>
         </div>
         <div className="h-1.5 bg-muted rounded-full overflow-hidden">
           <div
-            className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-200 ease-out"
-            style={{ width: `${overallProgress}%` }}
+            className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-300 ease-out"
+            style={{ width: `${Math.max(overallProgress, progress)}%` }}
           />
         </div>
+        {/* Backend status message */}
+        {message && (
+          <p className="text-xs text-muted-foreground/60 mt-1.5 font-mono truncate">
+            {message}
+          </p>
+        )}
       </div>
 
       {/* Steps */}
@@ -157,7 +157,7 @@ export default function ProcessingPipeline({ isComplete }: ProcessingPipelinePro
                 {isActive && (
                   <div className="mt-2 h-0.5 bg-muted rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-amber-400 rounded-full transition-all duration-100"
+                      className="h-full bg-amber-400 rounded-full transition-all duration-300"
                       style={{
                         width: `${Math.min(displayProgress, 100)}%`,
                       }}

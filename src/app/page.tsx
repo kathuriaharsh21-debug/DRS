@@ -1,7 +1,7 @@
 'use client'
 
-import React, { useState, useCallback } from "react";
-import { CircleDot, Zap, ArrowRight, Loader2, RotateCcw } from "lucide-react";
+import React, { useState, useCallback, useRef } from "react";
+import { CircleDot, Zap, RotateCcw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import VideoUploader from "@/components/umpire-ai/VideoUploader";
@@ -9,61 +9,188 @@ import ProcessingPipeline from "@/components/umpire-ai/ProcessingPipeline";
 import AnalysisView from "@/components/umpire-ai/AnalysisView";
 import type { AnalysisResult, ScreenState } from "@/lib/types";
 
+/** Map backend dismissal_type to frontend DecisionType */
+function mapDecisionType(dt: string): AnalysisResult["decisionType"] {
+  const map: Record<string, AnalysisResult["decisionType"]> = {
+    LBW: "LBW",
+    BOWLED: "BOWLED",
+    CAUGHT_BEHIND: "CAUGHT_BEHIND",
+    NO_BALL: "NO_BALL",
+    WIDE: "WIDE",
+    NOT_OUT: "NOT_OUT",
+  };
+  return map[dt] || "NOT_OUT";
+}
+
+/** Transform backend analysis result into frontend AnalysisResult */
+function transformResult(data: any): AnalysisResult {
+  const isHitting = data.predicted_stump_hit === true;
+  return {
+    decision: (data.decision?.decision || "NOT OUT") as "OUT" | "NOT OUT",
+    decisionType: mapDecisionType(data.decision?.dismissal_type || "NOT_OUT"),
+    confidence: Math.round((data.confidence || 0.8) * 100),
+    trajectory: {
+      pitchPoint: {
+        x: data.decision?.pitch_point?.x ?? 0.5,
+        y: data.decision?.pitch_point?.y ?? 0.5,
+      },
+      deviation: data.deviation_degrees ?? 0,
+      impactHeight: data.decision?.impact_point
+        ? data.decision.impact_point.y < 0.4
+          ? "Low"
+          : data.decision.impact_point.y < 0.6
+            ? "Middle"
+            : "High"
+        : "Middle",
+      predictedPath: isHitting ? "HITTING" : "MISSING",
+      ballSpeed: Math.round(data.ball_speed_kmh || 0),
+    },
+    frameData: (data.trajectory || []).map((pt: any, idx: number) => ({
+      x: pt.x ?? 0.5,
+      y: pt.y ?? 0.5,
+      frame: pt.frame_number ?? idx,
+    })),
+  };
+}
+
 export default function Home() {
   const [screen, setScreen] = useState<ScreenState>("upload");
   const [videoUrl, setVideoUrl] = useState<string>("");
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const handleFileSelect = useCallback((file: File, url: string) => {
-    setVideoUrl(url);
-    startProcessing(file);
-  }, []);
+  const [processingMessage, setProcessingMessage] = useState<string>("");
+  const [processingProgress, setProcessingProgress] = useState<number>(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const startProcessing = useCallback(async (file: File) => {
     setIsProcessing(true);
     setError(null);
     setScreen("processing");
+    setProcessingMessage("Uploading video to server...");
+    setProcessingProgress(0);
+
+    const abortController = new AbortController();
+    abortRef.current = abortController;
 
     try {
+      // Step 1: Upload video and start analysis
       const formData = new FormData();
-      formData.append("video", file);
+      formData.append("file", file);
+      formData.append("ball_type", "red");
 
-      const response = await fetch("/api/process-video", {
+      const uploadRes = await fetch("/api/process-video", {
         method: "POST",
         body: formData,
+        signal: abortController.signal,
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Processing failed");
+      if (!uploadRes.ok) {
+        let detail = "";
+        try {
+          const errBody = await uploadRes.json();
+          detail = Array.isArray(errBody.detail)
+            ? errBody.detail.map((d: any) => d.msg).join(", ")
+            : errBody.detail || uploadRes.statusText;
+        } catch {
+          detail = `HTTP ${uploadRes.status}`;
+        }
+        throw new Error(`Upload & analyze failed: ${detail}`);
       }
 
-      const data = await response.json();
-      setAnalysisResult(data.data);
+      const uploadData = await uploadRes.json();
+      const jobId = uploadData.job_id;
 
-      // Wait a moment after processing finishes before showing results
-      setTimeout(() => {
-        setScreen("analysis");
-        setIsProcessing(false);
-      }, 1000);
+      if (!jobId) {
+        throw new Error("No job ID received from server");
+      }
+
+      setProcessingMessage("Analysis started, processing frames...");
+
+      // Step 2: Poll for analysis status
+      const POLL_INTERVAL = 3000;
+      const MAX_WAIT = 600000; // 10 minutes max
+      const startTime = Date.now();
+
+      while (Date.now() - startTime < MAX_WAIT) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+
+        if (abortController.signal.aborted) break;
+
+        const statusRes = await fetch(
+          `/api/process-video?jobId=${jobId}`,
+          { signal: abortController.signal }
+        );
+
+        if (!statusRes.ok) {
+          // Server might be slow, wait and retry
+          continue;
+        }
+
+        const status = await statusRes.json();
+
+        setProcessingProgress(Math.round((status.progress || 0) * 100));
+        setProcessingMessage(status.message || "Processing...");
+
+        if (status.status === "completed") {
+          // Step 3: Fetch result via proxy
+          const resultRes = await fetch(
+            `/api/process-video?jobId=${jobId}&mode=result`,
+            { signal: abortController.signal }
+          );
+
+          if (!resultRes.ok) {
+            throw new Error("Failed to fetch analysis result");
+          }
+
+          const resultData = await resultRes.json();
+          const transformed = transformResult(resultData);
+          setAnalysisResult(transformed);
+
+          setTimeout(() => {
+            setScreen("analysis");
+            setIsProcessing(false);
+          }, 1000);
+          return;
+        }
+
+        if (status.status === "failed" || status.error) {
+          throw new Error(
+            status.error || "Analysis failed on server. Please try again."
+          );
+        }
+      }
+
+      throw new Error("Analysis timed out. The server may be slow — please try again.");
     } catch (err) {
+      if ((err as Error).name === "AbortError") return;
       console.error("Processing error:", err);
-      setError(err instanceof Error ? err.message : "Failed to process video");
+      setError((err as Error).message || "Failed to process video");
       setIsProcessing(false);
       setScreen("upload");
     }
   }, []);
 
+  const handleFileSelect = useCallback(
+    (file: File, url: string) => {
+      setVideoUrl(url);
+      startProcessing(file);
+    },
+    [startProcessing]
+  );
+
   const handleReset = useCallback(() => {
-    if (videoUrl) {
-      URL.revokeObjectURL(videoUrl);
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
     }
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideoUrl("");
     setAnalysisResult(null);
     setIsProcessing(false);
     setError(null);
+    setProcessingMessage("");
+    setProcessingProgress(0);
     setScreen("upload");
   }, [videoUrl]);
 
@@ -89,6 +216,17 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            {isProcessing && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleReset}
+                className="text-muted-foreground hover:text-destructive"
+              >
+                <RotateCcw className="w-4 h-4 mr-1.5" />
+                Cancel
+              </Button>
+            )}
             {screen === "analysis" && (
               <Button
                 variant="ghost"
@@ -133,7 +271,7 @@ export default function Home() {
             {/* Feature cards */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-2xl animate-fade-in-up" style={{ animationDelay: "100ms" }}>
               {[
-                { label: "Ball Detection", desc: "YOLO v8 tracking", icon: "🎯" },
+                { label: "Ball Detection", desc: "Classical CV tracking", icon: "🎯" },
                 { label: "3D Trajectory", desc: "Stereo estimation", icon: "📐" },
                 { label: "Decision Engine", desc: "Rule-based AI", icon: "⚖️" },
               ].map((feature) => (
@@ -165,7 +303,7 @@ export default function Home() {
             {/* Footer note */}
             <p className="text-xs text-muted-foreground/40 text-center max-w-md">
               Supports MP4, WebM, MOV, AVI formats up to 500MB.
-              Video is processed locally and not stored on any server.
+              Video is processed on the cloud backend and results are returned instantly.
             </p>
           </div>
         )}
@@ -185,7 +323,11 @@ export default function Home() {
               </p>
             </div>
 
-            <ProcessingPipeline isComplete={!isProcessing && screen === "processing"} />
+            <ProcessingPipeline
+              isComplete={false}
+              progress={processingProgress}
+              message={processingMessage}
+            />
 
             {error && (
               <div className="max-w-md animate-fade-in">
@@ -216,10 +358,10 @@ export default function Home() {
       <footer className="border-t border-border/30 py-4 mt-auto">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground/40">
-            Umpire AI — Ball Trajectory Analysis Prototype
+            Umpire AI — Ball Trajectory Analysis System
           </p>
           <div className="flex items-center gap-4 text-xs text-muted-foreground/40">
-            <span>Powered by AI</span>
+            <span>Powered by OpenCV + AI</span>
             <span>•</span>
             <span>Hawk-Eye Style Visualization</span>
           </div>
