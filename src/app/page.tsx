@@ -260,7 +260,7 @@ export default function Home() {
             )}
             <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/20">
               <Zap className="w-3 h-3 text-emerald-400" />
-              <span className="text-xs font-mono text-emerald-400">v2.1</span>
+              <span className="text-xs font-mono text-emerald-400">v3.0</span>
             </div>
           </div>
         </div>

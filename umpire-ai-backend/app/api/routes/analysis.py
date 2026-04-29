@@ -263,6 +263,12 @@ async def get_analysis_result(job_id: str) -> JSONResponse:
         confidence=result.get("confidence", 0.0),
         processing_time=result.get("processing_time"),
         annotated_video_path=result.get("annotated_video_path"),
+        # v3: post-release trajectory fields
+        normalised_prediction=result.get("normalised_prediction", []),
+        release_frame=result.get("release_frame"),
+        impact_frame=result.get("impact_frame"),
+        pitch_point=result.get("pitch_point"),
+        impact_point=result.get("impact_point"),
     )
 
 

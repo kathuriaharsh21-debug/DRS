@@ -164,6 +164,12 @@ class AnalysisResultResponse(BaseModel):
     confidence: float = 0.0
     processing_time: Optional[float] = Field(None, description="Seconds to process")
     annotated_video_path: Optional[str] = None
+    # v3: Post-release trajectory fields
+    normalised_prediction: List[dict] = Field(default_factory=list, description="Normalised prediction path (0-1)")
+    release_frame: Optional[int] = Field(None, description="Frame where ball was released from bowler")
+    impact_frame: Optional[int] = Field(None, description="Frame where ball hit batsman pad")
+    pitch_point: Optional[dict] = Field(None, description="Normalised pitch point {x, y}")
+    impact_point: Optional[dict] = Field(None, description="Normalised impact point {x, y}")
 
 
 class FrameDataListResponse(BaseModel):
