@@ -19,11 +19,11 @@ services:
       - key: DEBUG
         value: "false"
       - key: DETECTION_TIER
-        value: "auto"
+        value: "classical"
       - key: TRACKING_TIER
-        value: "auto"
+        value: "classical"
       - key: USE_UKF
-        value: "true"
+        value: "false"
     healthCheckPath: /health
     disk:
       name: uploads
