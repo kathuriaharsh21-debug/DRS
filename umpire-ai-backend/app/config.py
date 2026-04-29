@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     allowed_extensions: list = [".mp4", ".webm", ".mov", ".avi", ".mkv"]
 
     # ---- Detection parameters (v2 hybrid) ----
-    detection_tier: str = "auto"     # "auto", "yolo", or "classical"
+    detection_tier: str = "classical"   # "auto", "yolo", or "classical" (classical = no GPU needed)
     yolo_model_path: str = "yolo11s_cricket_ball.pt"
     yolo_confidence: float = 0.35
     yolo_iou_threshold: float = 0.45
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     detection_confidence: float = 0.6
 
     # ---- Tracking parameters (v2) ----
-    tracking_tier: str = "auto"      # "auto", "botsort", or "classical"
+    tracking_tier: str = "classical"    # "auto", "botsort", or "classical"
     tracker_max_distance: float = 120.0
     tracker_max_missing_frames: int = 15  # longer buffer for occlusion behind bowler
 

@@ -98,14 +98,15 @@ class YOLOBallDetector:
                 self.model = YOLO(str(weights))
                 logger.info("Loaded trained model: %s", model_path)
             else:
-                # Fall back to base YOLOv11s — will detect ball as
-                # class 32 ("sports ball") from COCO or similar
-                self.model = YOLO("yolo11s.pt")
+                # No trained model available — don't try downloading
+                # base yolo11s.pt as it's too slow on CPU deployments
                 logger.warning(
-                    "No trained model at '%s'; using base yolo11s.pt. "
-                    "Fine-tune on cricket ball data for best accuracy.",
+                    "No trained model at '%s'; YOLO detection unavailable. "
+                    "Using classical HSV+MOG2 fallback.",
                     model_path,
                 )
+                self._available = False
+                return
 
             self.device = device
             self._available = True
