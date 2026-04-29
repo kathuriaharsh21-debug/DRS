@@ -105,6 +105,9 @@ async def health() -> dict:
         "status": "healthy",
         "version": settings.app_version,
         "debug": settings.debug,
+        "detection_tier": settings.detection_tier,
+        "tracking_tier": settings.tracking_tier,
+        "use_ukf": settings.use_ukf,
         "upload_dir_exists": settings.upload_dir.exists(),
         "output_dir_exists": settings.output_dir.exists(),
     }
