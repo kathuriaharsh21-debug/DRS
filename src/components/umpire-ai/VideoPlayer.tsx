@@ -4,7 +4,6 @@ import React, { useRef, useState, useEffect, forwardRef, useImperativeHandle } f
 import { Play, Pause, RotateCcw, Maximize2, Gauge } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AnalysisResult } from "@/lib/types";
-import TrajectoryCanvas from "./TrajectoryCanvas";
 
 export interface VideoPlayerHandle {
   getIsPlaying: () => boolean;
@@ -24,12 +23,15 @@ const SPEED_OPTIONS = [
   { label: "2x", value: 2 },
 ];
 
+/**
+ * Clean video player — no trajectory overlay.
+ * The trajectory is shown separately in the 3D pitch view.
+ */
 const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
   function VideoPlayer({ videoUrl, analysisResult, onPlaybackSpeedChange }, ref) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [isPlaying, setIsPlaying] = useState(false);
-    const [showTrajectory, setShowTrajectory] = useState(false);
     const [hasStarted, setHasStarted] = useState(false);
     const [playbackSpeed, setPlaybackSpeed] = useState(1);
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
@@ -52,7 +54,6 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
         if (videoRef.current) {
           videoRef.current.play().catch(() => {});
           setIsPlaying(true);
-          setShowTrajectory(true);
           setHasStarted(true);
         }
       }, 800);
@@ -65,10 +66,6 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
         videoRef.current.pause();
       } else {
         videoRef.current.play();
-        if (!hasStarted) {
-          setShowTrajectory(true);
-          setHasStarted(true);
-        }
       }
       setIsPlaying(!isPlaying);
     };
@@ -78,7 +75,6 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       videoRef.current.currentTime = 0;
       videoRef.current.play();
       setIsPlaying(true);
-      setShowTrajectory(true);
       setHasStarted(true);
     };
 
@@ -103,7 +99,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           ref={containerRef}
           className="relative rounded-xl overflow-hidden bg-black aspect-video border border-muted"
         >
-          {/* Video element */}
+          {/* Video element — clean, no overlays */}
           <video
             ref={videoRef}
             src={videoUrl}
@@ -116,15 +112,6 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
             onEnded={() => setIsPlaying(false)}
           />
 
-          {/* Trajectory canvas overlay */}
-          {showTrajectory && (
-            <TrajectoryCanvas
-              frameData={analysisResult.frameData}
-              isAnimating={hasStarted}
-              decision={analysisResult.decision}
-            />
-          )}
-
           {/* Play/Pause overlay when not playing */}
           {!isPlaying && !hasStarted && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/30 cursor-pointer" onClick={togglePlay}>
@@ -135,7 +122,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           )}
 
           {/* UMPIRE AI watermark */}
-          <div className="absolute top-3 left-3 px-2 py-1 rounded bg-black/60 backdrop-blur-sm">
+          <div className="absolute top-3 left-3 px-2 py-1 rounded bg-black/60 backdrop-blur-sm pointer-events-none">
             <span className="text-xs font-mono font-bold text-emerald-400 tracking-wider">
               UMPIRE AI
             </span>
@@ -144,7 +131,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           {/* Decision badge */}
           {hasStarted && (
             <div
-              className={`absolute top-3 right-3 px-3 py-1 rounded backdrop-blur-sm font-bold text-sm tracking-wider animate-scale-in ${
+              className={`absolute top-3 right-3 px-3 py-1 rounded backdrop-blur-sm font-bold text-sm tracking-wider animate-scale-in pointer-events-none ${
                 analysisResult.decision === "OUT"
                   ? "bg-red-500/20 text-red-400 border border-red-500/40"
                   : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
@@ -156,7 +143,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
           {/* Speed indicator badge */}
           {hasStarted && playbackSpeed !== 1 && (
-            <div className="absolute bottom-3 left-3 px-2 py-1 rounded bg-black/60 backdrop-blur-sm">
+            <div className="absolute bottom-3 left-3 px-2 py-1 rounded bg-black/60 backdrop-blur-sm pointer-events-none">
               <span className="text-xs font-mono font-bold text-amber-400 tracking-wider">
                 {playbackSpeed}x
               </span>
