@@ -9,7 +9,7 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Install lightweight dependencies (CPU-only, no PyTorch/ultralytics)
+# Install lightweight dependencies (no PyTorch/ultralytics)
 COPY requirements-render.txt requirements-render.txt
 RUN pip install --no-cache-dir -r requirements-render.txt
 
@@ -19,7 +19,7 @@ COPY . .
 # Create storage directories
 RUN mkdir -p /app/uploads /app/output
 
-# Force classical detection tier (CPU-only deployment)
+# Force classical detection tier (no YOLO on this deployment)
 ENV DETECTION_TIER=classical
 ENV TRACKING_TIER=classical
 ENV USE_UKF=false
