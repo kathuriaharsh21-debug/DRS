@@ -18,6 +18,8 @@ export type DecisionType =
 export interface TrajectoryData {
   /** Where the ball pitched on the pitch (normalized 0-1 coordinates) */
   pitchPoint: { x: number; y: number };
+  /** Where the ball hit the batsman's pad (normalized 0-1) */
+  impactPoint: { x: number; y: number };
   /** Lateral movement in degrees */
   deviation: number;
   /** Impact height on the batsman's pad */
@@ -26,6 +28,12 @@ export interface TrajectoryData {
   predictedPath: "HITTING" | "MISSING";
   /** Ball speed in km/h */
   ballSpeed: number;
+  /** Predicted path from impact to stumps (normalised pitch coords) */
+  predictedPathPoints: Array<{ x: number; y: number; z: number }>;
+  /** Frame number where ball was released from bowler's hand */
+  releaseFrame: number | null;
+  /** Frame number where ball hit batsman's pad */
+  impactFrame: number | null;
 }
 
 /** A single frame's trajectory point (for canvas animation) */

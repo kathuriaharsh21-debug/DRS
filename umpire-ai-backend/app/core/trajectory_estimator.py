@@ -638,29 +638,42 @@ class TrajectoryEstimator:
     def _predict_stump_hit(self, points: List[TrajectoryPoint]) -> bool:
         """Extrapolate trajectory to stump line and check if it hits.
 
-        Uses the last 5 points for linear regression extrapolation,
-        which is more robust than simple 2-point extrapolation.
+        Uses the post-pitch trajectory for quadratic regression
+        extrapolation, which accounts for swing/curve of the ball.
+        Falls back to linear regression with more data points.
         """
         if len(points) < 5:
             return False
 
-        # Use last 5 points for better prediction
-        recent = points[-min(5, len(points)):]
+        # Use last N points after any detected pitch point
+        # (at least 3 points, up to all available)
+        recent = points[-min(max(len(points) // 2, 5), len(points)):]
 
-        # Linear regression on x vs y (for extrapolation to stump line)
         ys = np.array([p.y for p in recent])
         xs = np.array([p.x for p in recent])
 
         if len(np.unique(ys)) < 2:
             return False
 
-        # Fit: x = slope * y + intercept
-        coeffs = np.polyfit(ys, xs, 1)
-        slope, intercept = coeffs
-
         # Stump line at y = 0.9 (batsman end in normalised coords)
         stump_y = 0.9
-        predicted_x = slope * stump_y + intercept
 
-        stump_half_width = 0.05  # normalised stump zone
+        # Try quadratic fit if we have enough points (accounts for swing)
+        if len(recent) >= 8:
+            try:
+                coeffs = np.polyfit(ys, xs, 2)
+                predicted_x = float(np.polyval(coeffs, stump_y))
+            except (np.linalg.LinAlgError, ValueError):
+                # Fallback to linear
+                slope, intercept = np.polyfit(ys, xs, 1)
+                predicted_x = slope * stump_y + intercept
+        else:
+            # Linear regression: x = slope * y + intercept
+            slope, intercept = np.polyfit(ys, xs, 1)
+            predicted_x = slope * stump_y + intercept
+
+        # Stump zone: ICC stumps are 9 inches (22.86cm) wide on a
+        # 10 feet (305cm) pitch → roughly 7.5% of pitch width
+        # We use 8% to give some margin for measurement error
+        stump_half_width = 0.08
         return abs(predicted_x - 0.5) < stump_half_width

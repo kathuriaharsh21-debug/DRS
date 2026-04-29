@@ -25,25 +25,43 @@ function mapDecisionType(dt: string): AnalysisResult["decisionType"] {
 /** Transform backend analysis result into frontend AnalysisResult */
 function transformResult(data: any): AnalysisResult {
   const isHitting = data.predicted_stump_hit === true;
+
+  // Use top-level pitch/impact points (from v3 backend) or fall back to decision sub-object
+  const pitchPoint = data.pitch_point || data.decision?.pitch_point;
+  const impactPoint = data.impact_point || data.decision?.impact_point;
+
   return {
     decision: (data.decision?.decision || "NOT OUT") as "OUT" | "NOT OUT",
     decisionType: mapDecisionType(data.decision?.dismissal_type || "NOT_OUT"),
     confidence: Math.round((data.confidence || 0.8) * 100),
     trajectory: {
       pitchPoint: {
-        x: data.decision?.pitch_point?.x ?? 0.5,
-        y: data.decision?.pitch_point?.y ?? 0.5,
+        x: pitchPoint?.x ?? 0.5,
+        y: pitchPoint?.y ?? 0.5,
+      },
+      impactPoint: {
+        x: impactPoint?.x ?? 0.5,
+        y: impactPoint?.y ?? 0.7,
       },
       deviation: data.deviation_degrees ?? 0,
-      impactHeight: data.decision?.impact_point
-        ? data.decision.impact_point.y < 0.4
+      impactHeight: impactPoint
+        ? impactPoint.y < 0.4
           ? "Low"
-          : data.decision.impact_point.y < 0.6
+          : impactPoint.y < 0.6
             ? "Middle"
             : "High"
         : "Middle",
       predictedPath: isHitting ? "HITTING" : "MISSING",
       ballSpeed: Math.round(data.ball_speed_kmh || 0),
+      predictedPathPoints: (data.normalised_prediction || []).map(
+        (pt: any) => ({
+          x: pt.x ?? 0.5,
+          y: pt.y ?? 0.5,
+          z: pt.z ?? 0,
+        })
+      ),
+      releaseFrame: data.release_frame ?? null,
+      impactFrame: data.impact_frame ?? null,
     },
     frameData: (data.trajectory || []).map((pt: any, idx: number) => ({
       x: pt.x ?? 0.5,
