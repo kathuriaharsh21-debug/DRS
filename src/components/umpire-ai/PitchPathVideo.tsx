@@ -7,6 +7,8 @@ interface PitchPathVideoProps {
   analysisResult: AnalysisResult;
   isPlaying: boolean;
   playbackSpeed: number;
+  /** 0-1 progress driven by the video's currentTime / duration */
+  videoProgress: number;
   onProgress?: (progress: number) => void;
 }
 
@@ -101,7 +103,6 @@ function drawStumpSet(
 ) {
   const positions = [-STUMP_SPREAD, 0, STUMP_SPREAD];
   const top = STUMP_HEIGHT;
-  const stumpscaleMult = 1.8;
 
   for (const sx of positions) {
     const wBot = worldFromPitch(sx, pitchY, 0);
@@ -109,26 +110,36 @@ function drawStumpSet(
     const bot = project(wBot.x, wBot.y, wBot.z, cx, cy, flip);
     const tp = project(wTop.x, wTop.y, wTop.z, cx, cy, flip);
     if (!bot || !tp) continue;
-    const lineW = Math.max(3, 8 * bot.scale * stumpscaleMult);
+    // Slim, realistic stump line — thin tapered look
+    const lineW = Math.max(1.5, 2.5 * bot.scale);
     ctx.save();
     ctx.globalAlpha = alpha;
+    // Shadow
+    ctx.strokeStyle = "rgba(0,0,0,0.4)";
+    ctx.lineWidth = lineW + 1.2;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(bot.x + 0.8, bot.y);
+    ctx.lineTo(tp.x + 0.5, tp.y);
+    ctx.stroke();
+    // Main stump body
     ctx.strokeStyle = color;
     ctx.lineWidth = lineW;
-    ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(bot.x, bot.y);
     ctx.lineTo(tp.x, tp.y);
     ctx.stroke();
-    // Stump highlight edge
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-    ctx.lineWidth = lineW * 0.4;
+    // Left highlight edge for 3D effect
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+    ctx.lineWidth = Math.max(0.5, lineW * 0.3);
     ctx.beginPath();
-    ctx.moveTo(bot.x - lineW * 0.15, bot.y);
-    ctx.lineTo(tp.x - lineW * 0.15, tp.y);
+    ctx.moveTo(bot.x - lineW * 0.2, bot.y);
+    ctx.lineTo(tp.x - lineW * 0.2, tp.y);
     ctx.stroke();
     ctx.restore();
   }
 
+  // Bails — two grooved cylinders resting on stump tops
   for (let i = 0; i < 2; i++) {
     const sx1 = positions[i], sx2 = positions[i + 1];
     const ext = BAIL_LENGTH * 0.35;
@@ -137,21 +148,30 @@ function drawStumpSet(
     const p1 = project(w1.x, w1.y, w1.z, cx, cy, flip);
     const p2 = project(w2.x, w2.y, w2.z, cx, cy, flip);
     if (!p1 || !p2) continue;
-    const bailW = Math.max(2, 5 * p1.scale * stumpscaleMult);
+    const bailW = Math.max(1, 1.8 * p1.scale);
     ctx.save();
     ctx.globalAlpha = alpha;
+    // Shadow
+    ctx.strokeStyle = "rgba(0,0,0,0.3)";
+    ctx.lineWidth = bailW + 1;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(p1.x + 0.6, p1.y + 0.6);
+    ctx.lineTo(p2.x + 0.6, p2.y + 0.6);
+    ctx.stroke();
+    // Bail body
     ctx.strokeStyle = color;
     ctx.lineWidth = bailW;
-    ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(p1.x, p1.y);
     ctx.lineTo(p2.x, p2.y);
     ctx.stroke();
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
-    ctx.lineWidth = bailW * 0.35;
+    // Highlight
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+    ctx.lineWidth = Math.max(0.5, bailW * 0.3);
     ctx.beginPath();
-    ctx.moveTo(p1.x, p1.y - bailW * 0.2);
-    ctx.lineTo(p2.x, p2.y - bailW * 0.2);
+    ctx.moveTo(p1.x, p1.y - bailW * 0.25);
+    ctx.lineTo(p2.x, p2.y - bailW * 0.25);
     ctx.stroke();
     ctx.restore();
   }
@@ -268,6 +288,7 @@ export default function PitchPathVideo({
   analysisResult,
   isPlaying,
   playbackSpeed,
+  videoProgress,
   onProgress,
 }: PitchPathVideoProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -277,10 +298,12 @@ export default function PitchPathVideo({
   const progressRef = useRef(0);
   const isPlayingRef = useRef(isPlaying);
   const playbackSpeedRef = useRef(playbackSpeed);
+  const videoProgressRef = useRef(videoProgress);
   const lastTimeRef = useRef<number>(0);
 
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { playbackSpeedRef.current = playbackSpeed; }, [playbackSpeed]);
+  useEffect(() => { videoProgressRef.current = videoProgress; }, [videoProgress]);
 
   const updateDimensions = useCallback(() => {
     if (!containerRef.current) return;
@@ -371,10 +394,10 @@ export default function PitchPathVideo({
     drawStumpSet(ctx, PITCH_LENGTH, cx, cy, flip, "#F0E8D8", 0.85);
     ctx.restore();
 
-    // Trajectory paths — ALL points shown after fade-in
+    // Trajectory paths — progressively drawn in sync with video
     if (totalPoints < 2) return;
 
-    // Project all tracked trajectory points
+    // Project ALL tracked trajectory points
     const screenPoints: { x: number; y: number }[] = [];
     for (let i = 0; i < totalPoints; i++) {
       const fd = frameData[i];
@@ -385,16 +408,37 @@ export default function PitchPathVideo({
       if (sp) screenPoints.push(sp);
     }
 
-    // Tracked path — slim red
-    if (screenPoints.length >= 2) {
+    // Determine how many points to show based on video progress
+    // videoProgress 0→1 maps to showing 0→100% of the tracked path
+    const visibleCount = Math.min(
+      screenPoints.length,
+      Math.max(1, Math.floor(videoProgress * screenPoints.length))
+    );
+    const visibleTracked = screenPoints.slice(0, visibleCount);
+
+    // Tracked path — slim red (only visible portion)
+    if (visibleTracked.length >= 2) {
       ctx.save();
       ctx.globalAlpha = setupAlpha;
-      drawSlimPath(ctx, screenPoints, "#FF0000", "rgba(255,0,0,0.3)", 2, 6);
+      drawSlimPath(ctx, visibleTracked, "#FF0000", "rgba(255,0,0,0.3)", 2, 6);
+      // Bright dot at the leading edge of the path
+      const tip = visibleTracked[visibleTracked.length - 1];
+      ctx.beginPath();
+      ctx.arc(tip.x, tip.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = "#FF4444";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(tip.x, tip.y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,68,68,0.3)";
+      ctx.fill();
       ctx.restore();
     }
 
-    // Predicted path — slim blue
-    if (trajectory.predictedPathPoints.length > 0 && screenPoints.length > 0) {
+    // Predicted path — slim blue, shown after ball reaches pad (videoProgress > 0.85)
+    const showPredicted = videoProgress > 0.85;
+    if (showPredicted && trajectory.predictedPathPoints.length > 0 && screenPoints.length > 0) {
+      // Fade in predicted path
+      const predAlpha = Math.min(1, (videoProgress - 0.85) / 0.1);
       const lastScreen = screenPoints[screenPoints.length - 1];
       const predPoints: { x: number; y: number }[] = [lastScreen];
       for (let i = 0; i < trajectory.predictedPathPoints.length; i++) {
@@ -409,7 +453,7 @@ export default function PitchPathVideo({
       }
       if (predPoints.length > 1) {
         ctx.save();
-        ctx.globalAlpha = setupAlpha;
+        ctx.globalAlpha = setupAlpha * predAlpha;
         drawSlimPath(ctx, predPoints, "#0066FF", "rgba(0,102,255,0.3)", 2, 6);
         ctx.restore();
       }
@@ -428,11 +472,14 @@ export default function PitchPathVideo({
       if (lastTimeRef.current === 0) lastTimeRef.current = timestamp;
       const deltaMs = timestamp - lastTimeRef.current;
       lastTimeRef.current = timestamp;
-      if (isPlayingRef.current) {
+      // Sync progress with video — when video provides progress, use it
+      if (videoProgressRef.current > 0) {
+        progressRef.current = videoProgressRef.current;
+      } else if (isPlayingRef.current) {
         const increment = (deltaMs / ANIM_DURATION_MS) * playbackSpeedRef.current;
         progressRef.current = Math.min(1.0, progressRef.current + increment);
-        onProgress?.(progressRef.current);
       }
+      onProgress?.(progressRef.current);
       drawScene(progressRef.current, w, h);
       if (progressRef.current >= 1.0) {
         drawScene(1.0, w, h);
@@ -448,6 +495,13 @@ export default function PitchPathVideo({
     progressRef.current = 0;
     lastTimeRef.current = 0;
   }, [analysisResult]);
+
+  // Reset 3D view when video restarts
+  useEffect(() => {
+    if (videoProgress < 0.01 && progressRef.current > 0.5) {
+      progressRef.current = 0;
+    }
+  }, [videoProgress]);
 
   return (
     <div ref={containerRef} className="w-full h-full">
