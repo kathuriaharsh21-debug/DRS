@@ -20,8 +20,8 @@ const BAIL_LENGTH = 0.5;
 const POPPING_CREASE_DIST = 4;
 
 // Camera constants
-const CAM_ELEVATION = 28;
-const CAM_AZIMUTH = 10;
+const CAM_ELEVATION = 32;
+const CAM_AZIMUTH = 0;
 const CAM_DISTANCE = 85;
 const CAM_HEIGHT_FEET = 32;
 const FOCAL_LENGTH = 450;
