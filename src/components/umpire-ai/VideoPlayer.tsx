@@ -8,14 +8,12 @@ import type { AnalysisResult } from "@/lib/types";
 export interface VideoPlayerHandle {
   getIsPlaying: () => boolean;
   getPlaybackSpeed: () => number;
-  getProgress: () => number;
 }
 
 interface VideoPlayerProps {
   videoUrl: string;
   analysisResult: AnalysisResult;
   onPlaybackSpeedChange?: (speed: number) => void;
-  onTimeUpdate?: (progress: number) => void;
 }
 
 const SPEED_OPTIONS = [
@@ -30,19 +28,17 @@ const SPEED_OPTIONS = [
  * The trajectory is shown separately in the 3D pitch view.
  */
 const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
-  function VideoPlayer({ videoUrl, analysisResult, onPlaybackSpeedChange, onTimeUpdate }, ref) {
+  function VideoPlayer({ videoUrl, analysisResult, onPlaybackSpeedChange }, ref) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [hasStarted, setHasStarted] = useState(false);
     const [playbackSpeed, setPlaybackSpeed] = useState(1);
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
-    const progressRef = useRef(0);
 
     useImperativeHandle(ref, () => ({
       getIsPlaying: () => isPlaying,
       getPlaybackSpeed: () => playbackSpeed,
-      getProgress: () => progressRef.current,
     }));
 
     // Sync playback speed to video element
@@ -52,20 +48,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       }
     }, [playbackSpeed]);
 
-    // Track video time for sync
-    useEffect(() => {
-      const video = videoRef.current;
-      if (!video) return;
-      const handleTimeUpdate = () => {
-        if (video.duration > 0) {
-          const p = video.currentTime / video.duration;
-          progressRef.current = p;
-          onTimeUpdate?.(p);
-        }
-      };
-      video.addEventListener('timeupdate', handleTimeUpdate);
-      return () => video.removeEventListener('timeupdate', handleTimeUpdate);
-    }, [onTimeUpdate]);
+    // Auto-play video when analysis view is shown
     useEffect(() => {
       const timer = setTimeout(() => {
         if (videoRef.current) {

@@ -7,8 +7,6 @@ interface PitchPathVideoProps {
   analysisResult: AnalysisResult;
   isPlaying: boolean;
   playbackSpeed: number;
-  /** 0-1 progress driven by the video's currentTime / duration */
-  videoProgress: number;
   onProgress?: (progress: number) => void;
 }
 
@@ -288,7 +286,6 @@ export default function PitchPathVideo({
   analysisResult,
   isPlaying,
   playbackSpeed,
-  videoProgress,
   onProgress,
 }: PitchPathVideoProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -298,12 +295,10 @@ export default function PitchPathVideo({
   const progressRef = useRef(0);
   const isPlayingRef = useRef(isPlaying);
   const playbackSpeedRef = useRef(playbackSpeed);
-  const videoProgressRef = useRef(videoProgress);
   const lastTimeRef = useRef<number>(0);
 
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
   useEffect(() => { playbackSpeedRef.current = playbackSpeed; }, [playbackSpeed]);
-  useEffect(() => { videoProgressRef.current = videoProgress; }, [videoProgress]);
 
   const updateDimensions = useCallback(() => {
     if (!containerRef.current) return;
@@ -394,10 +389,10 @@ export default function PitchPathVideo({
     drawStumpSet(ctx, PITCH_LENGTH, cx, cy, flip, "#F0E8D8", 0.85);
     ctx.restore();
 
-    // Trajectory paths — progressively drawn in sync with video
+    // Trajectory paths — show full path after fade-in
     if (totalPoints < 2) return;
 
-    // Project ALL tracked trajectory points
+    // Project all tracked trajectory points
     const screenPoints: { x: number; y: number }[] = [];
     for (let i = 0; i < totalPoints; i++) {
       const fd = frameData[i];
@@ -408,37 +403,16 @@ export default function PitchPathVideo({
       if (sp) screenPoints.push(sp);
     }
 
-    // Determine how many points to show based on video progress
-    // videoProgress 0→1 maps to showing 0→100% of the tracked path
-    const visibleCount = Math.min(
-      screenPoints.length,
-      Math.max(1, Math.floor(videoProgress * screenPoints.length))
-    );
-    const visibleTracked = screenPoints.slice(0, visibleCount);
-
-    // Tracked path — slim red (only visible portion)
-    if (visibleTracked.length >= 2) {
+    // Tracked path — slim red
+    if (screenPoints.length >= 2) {
       ctx.save();
       ctx.globalAlpha = setupAlpha;
-      drawSlimPath(ctx, visibleTracked, "#FF0000", "rgba(255,0,0,0.3)", 2, 6);
-      // Bright dot at the leading edge of the path
-      const tip = visibleTracked[visibleTracked.length - 1];
-      ctx.beginPath();
-      ctx.arc(tip.x, tip.y, 4, 0, Math.PI * 2);
-      ctx.fillStyle = "#FF4444";
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(tip.x, tip.y, 8, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255,68,68,0.3)";
-      ctx.fill();
+      drawSlimPath(ctx, screenPoints, "#FF0000", "rgba(255,0,0,0.3)", 2, 6);
       ctx.restore();
     }
 
-    // Predicted path — slim blue, shown after ball reaches pad (videoProgress > 0.85)
-    const showPredicted = videoProgress > 0.85;
-    if (showPredicted && trajectory.predictedPathPoints.length > 0 && screenPoints.length > 0) {
-      // Fade in predicted path
-      const predAlpha = Math.min(1, (videoProgress - 0.85) / 0.1);
+    // Predicted path — slim blue
+    if (trajectory.predictedPathPoints.length > 0 && screenPoints.length > 0) {
       const lastScreen = screenPoints[screenPoints.length - 1];
       const predPoints: { x: number; y: number }[] = [lastScreen];
       for (let i = 0; i < trajectory.predictedPathPoints.length; i++) {
@@ -453,7 +427,7 @@ export default function PitchPathVideo({
       }
       if (predPoints.length > 1) {
         ctx.save();
-        ctx.globalAlpha = setupAlpha * predAlpha;
+        ctx.globalAlpha = setupAlpha;
         drawSlimPath(ctx, predPoints, "#0066FF", "rgba(0,102,255,0.3)", 2, 6);
         ctx.restore();
       }
@@ -472,14 +446,11 @@ export default function PitchPathVideo({
       if (lastTimeRef.current === 0) lastTimeRef.current = timestamp;
       const deltaMs = timestamp - lastTimeRef.current;
       lastTimeRef.current = timestamp;
-      // Sync progress with video — when video provides progress, use it
-      if (videoProgressRef.current > 0) {
-        progressRef.current = videoProgressRef.current;
-      } else if (isPlayingRef.current) {
+      if (isPlayingRef.current) {
         const increment = (deltaMs / ANIM_DURATION_MS) * playbackSpeedRef.current;
         progressRef.current = Math.min(1.0, progressRef.current + increment);
+        onProgress?.(progressRef.current);
       }
-      onProgress?.(progressRef.current);
       drawScene(progressRef.current, w, h);
       if (progressRef.current >= 1.0) {
         drawScene(1.0, w, h);
@@ -495,13 +466,6 @@ export default function PitchPathVideo({
     progressRef.current = 0;
     lastTimeRef.current = 0;
   }, [analysisResult]);
-
-  // Reset 3D view when video restarts
-  useEffect(() => {
-    if (videoProgress < 0.01 && progressRef.current > 0.5) {
-      progressRef.current = 0;
-    }
-  }, [videoProgress]);
 
   return (
     <div ref={containerRef} className="w-full h-full">

@@ -24,15 +24,10 @@ export default function AnalysisView({
 }: AnalysisViewProps) {
   const videoPlayerRef = useRef<VideoPlayerHandle>(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
-  const [videoProgress, setVideoProgress] = useState(0);
   const [activeView, setActiveView] = useState<"split" | "video" | "3d">("split");
 
   const handleSpeedChange = useCallback((speed: number) => {
     setPlaybackSpeed(speed);
-  }, []);
-
-  const handleTimeUpdate = useCallback((progress: number) => {
-    setVideoProgress(progress);
   }, []);
 
   // Derive playing state from speed — the pitch video syncs with the video player
@@ -98,7 +93,6 @@ export default function AnalysisView({
                 videoUrl={videoUrl}
                 analysisResult={analysisResult}
                 onPlaybackSpeedChange={handleSpeedChange}
-                onTimeUpdate={handleTimeUpdate}
               />
             </div>
           )}
@@ -120,7 +114,6 @@ export default function AnalysisView({
                   analysisResult={analysisResult}
                   isPlaying={isVideoPlaying}
                   playbackSpeed={playbackSpeed}
-                  videoProgress={videoProgress}
                 />
                 {/* Watermark */}
                 <div className="absolute top-3 left-3 px-2 py-1 rounded bg-black/60 backdrop-blur-sm z-10 pointer-events-none">
